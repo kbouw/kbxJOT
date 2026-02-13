@@ -1,0 +1,8 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+.last_results.json
+.config.json
+.claude/
+transcripts/
