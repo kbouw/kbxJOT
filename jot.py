@@ -86,11 +86,39 @@ if _MISSING:
 # Constants & paths
 # ---------------------------------------------------------------------------
 
+def _config_dir() -> Path:
+    """User config/data directory for jot's state files.
+
+    Honours JOT_CONFIG_DIR, then XDG_CONFIG_HOME, else ~/.config/jot.
+    Kept out of the package install location so state survives upgrades
+    and works when jot is installed as a uv tool (read-only site-packages).
+    """
+    override = os.environ.get("JOT_CONFIG_DIR")
+    if override:
+        base = Path(override).expanduser()
+    else:
+        xdg = os.environ.get("XDG_CONFIG_HOME")
+        base = (Path(xdg).expanduser() / "jot") if xdg else (Path.home() / ".config" / "jot")
+    base.mkdir(parents=True, exist_ok=True)
+    return base
+
+
 APP_DIR = Path(__file__).parent.resolve()
-CACHE_FILE = APP_DIR / ".last_results.json"
-CONFIG_FILE = APP_DIR / ".config.json"
-DOMAINS_FILE = APP_DIR / "domains.md"
-ENV_FILE = APP_DIR / ".env"
+CONFIG_DIR = _config_dir()
+CACHE_FILE = CONFIG_DIR / ".last_results.json"
+CONFIG_FILE = CONFIG_DIR / "config.json"
+DOMAINS_FILE = CONFIG_DIR / "domains.md"
+
+# .env is searched in several locations (first match wins): an explicit
+# JOT_ENV_FILE, the config dir, the current working directory, then
+# alongside the source (handy for `uv run jot.py` during development).
+ENV_FILE = CONFIG_DIR / ".env"
+_ENV_CANDIDATES = [
+    os.environ.get("JOT_ENV_FILE"),
+    CONFIG_DIR / ".env",
+    Path.cwd() / ".env",
+    APP_DIR / ".env",
+]
 
 _DEFAULT_DOWNLOAD_DIR = "~/Books"
 
@@ -159,24 +187,43 @@ def _extract_video_id(url: str) -> str | None:
 # Domain list management (domains.md)
 # ---------------------------------------------------------------------------
 
+_DEFAULT_DOMAINS = (
+    "# Jot Domain Lists\n"
+    "#\n"
+    "# Manually edit this file or use:\n"
+    "#   jot --block N    (add domain of result N to blocked list)\n"
+    "#   jot --allow N    (add domain of result N to allowed list)\n"
+    "\n"
+    "## Allowed\n"
+    "- beej.us\n"
+    "- archive.org\n"
+    "- gutenberg.org\n"
+    "- arxiv.org\n"
+    "- openlibrary.org\n"
+    "- researchgate.net\n"
+    "\n"
+    "## Blocked\n"
+    "- pdfcoffee.com\n"
+    "- pdfdrive.com\n"
+    "- zlibrary.to\n"
+    "- libgen.is\n"
+    "- freepdfbook.com\n"
+)
+
+
 def _ensure_domains_file() -> None:
     if DOMAINS_FILE.exists():
         return
-    DOMAINS_FILE.write_text(
-        "# Jot Domain Lists\n"
-        "\n"
-        "## Allowed\n"
-        "- archive.org\n"
-        "- gutenberg.org\n"
-        "- arxiv.org\n"
-        "- openlibrary.org\n"
-        "\n"
-        "## Blocked\n"
-        "- pdfcoffee.com\n"
-        "- pdfdrive.com\n"
-        "- zlibrary.to\n",
-        encoding="utf-8",
-    )
+    # On first run after install, carry over a curated domains.md that ships
+    # alongside the source (if present) so existing customizations survive.
+    seed = APP_DIR / "domains.md"
+    if seed.exists() and seed.resolve() != DOMAINS_FILE.resolve():
+        try:
+            DOMAINS_FILE.write_text(seed.read_text(encoding="utf-8"), encoding="utf-8")
+            return
+        except OSError:
+            pass
+    DOMAINS_FILE.write_text(_DEFAULT_DOMAINS, encoding="utf-8")
 
 
 def _parse_domains() -> tuple[set[str], set[str]]:
@@ -1016,9 +1063,14 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    # Load .env
-    if ENV_FILE.exists():
-        load_dotenv(ENV_FILE, override=True)
+    # Load .env from the first candidate location that exists.
+    for candidate in _ENV_CANDIDATES:
+        if not candidate:
+            continue
+        path = Path(candidate).expanduser()
+        if path.exists():
+            load_dotenv(path, override=True)
+            break
 
     # PDF output dir override
     if args.output and not (args.query and _is_youtube_url(args.query)):
