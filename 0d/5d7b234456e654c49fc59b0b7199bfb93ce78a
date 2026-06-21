@@ -1,0 +1,24 @@
+pyproject.toml
+  s_173ac8d022497c::t_8699ec0c3deb20 1-30
+README.md
+  s_173ac8d022497c::t_0f73c4339144d0 21,24,26-37,45-61,63
+jot.py
+  s_173ac8d022497c::t_3d2d83152818d2 89-105,107-121
+  s_173ac8d022497c::t_82686971ededc2 190-213,217-226
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.9",
+  "base_commit_sha": "0d5d7b234456e654c49fc59b0b7199bfb93ce78a",
+  "prompts": {},
+  "sessions": {
+    "s_173ac8d022497c": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "019ee98a-aa92-7679-ba9a-1dc34b187ba4",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Kristian Bouw <kbouw@hey.com>"
+    }
+  }
+}
