@@ -1,0 +1,20 @@
+jot.py
+  s_173ac8d022497c::t_0eccdf267ced35 824-826
+  s_173ac8d022497c::t_f266d0a6d46821 742-758
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.5.9",
+  "base_commit_sha": "6e84b0a9e5843cc150231b497e60d85a3f28e03b",
+  "prompts": {},
+  "sessions": {
+    "s_173ac8d022497c": {
+      "agent_id": {
+        "tool": "pi",
+        "id": "019ee98a-aa92-7679-ba9a-1dc34b187ba4",
+        "model": "claude-opus-4-8"
+      },
+      "human_author": "Kristian Bouw <kbouw@hey.com>"
+    }
+  }
+}
