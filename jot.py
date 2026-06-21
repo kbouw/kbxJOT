@@ -86,11 +86,39 @@ if _MISSING:
 # Constants & paths
 # ---------------------------------------------------------------------------
 
+def _config_dir() -> Path:
+    """User config/data directory for jot's state files.
+
+    Honours JOT_CONFIG_DIR, then XDG_CONFIG_HOME, else ~/.config/jot.
+    Kept out of the package install location so state survives upgrades
+    and works when jot is installed as a uv tool (read-only site-packages).
+    """
+    override = os.environ.get("JOT_CONFIG_DIR")
+    if override:
+        base = Path(override).expanduser()
+    else:
+        xdg = os.environ.get("XDG_CONFIG_HOME")
+        base = (Path(xdg).expanduser() / "jot") if xdg else (Path.home() / ".config" / "jot")
+    base.mkdir(parents=True, exist_ok=True)
+    return base
+
+
 APP_DIR = Path(__file__).parent.resolve()
-CACHE_FILE = APP_DIR / ".last_results.json"
-CONFIG_FILE = APP_DIR / ".config.json"
-DOMAINS_FILE = APP_DIR / "domains.md"
-ENV_FILE = APP_DIR / ".env"
+CONFIG_DIR = _config_dir()
+CACHE_FILE = CONFIG_DIR / ".last_results.json"
+CONFIG_FILE = CONFIG_DIR / "config.json"
+DOMAINS_FILE = CONFIG_DIR / "domains.md"
+
+# .env is searched in several locations (first match wins): an explicit
+# JOT_ENV_FILE, the config dir, the current working directory, then
+# alongside the source (handy for `uv run jot.py` during development).
+ENV_FILE = CONFIG_DIR / ".env"
+_ENV_CANDIDATES = [
+    os.environ.get("JOT_ENV_FILE"),
+    CONFIG_DIR / ".env",
+    Path.cwd() / ".env",
+    APP_DIR / ".env",
+]
 
 _DEFAULT_DOWNLOAD_DIR = "~/Books"
 
@@ -159,24 +187,43 @@ def _extract_video_id(url: str) -> str | None:
 # Domain list management (domains.md)
 # ---------------------------------------------------------------------------
 
+_DEFAULT_DOMAINS = (
+    "# Jot Domain Lists\n"
+    "#\n"
+    "# Manually edit this file or use:\n"
+    "#   jot --block N    (add domain of result N to blocked list)\n"
+    "#   jot --allow N    (add domain of result N to allowed list)\n"
+    "\n"
+    "## Allowed\n"
+    "- beej.us\n"
+    "- archive.org\n"
+    "- gutenberg.org\n"
+    "- arxiv.org\n"
+    "- openlibrary.org\n"
+    "- researchgate.net\n"
+    "\n"
+    "## Blocked\n"
+    "- pdfcoffee.com\n"
+    "- pdfdrive.com\n"
+    "- zlibrary.to\n"
+    "- libgen.is\n"
+    "- freepdfbook.com\n"
+)
+
+
 def _ensure_domains_file() -> None:
     if DOMAINS_FILE.exists():
         return
-    DOMAINS_FILE.write_text(
-        "# Jot Domain Lists\n"
-        "\n"
-        "## Allowed\n"
-        "- archive.org\n"
-        "- gutenberg.org\n"
-        "- arxiv.org\n"
-        "- openlibrary.org\n"
-        "\n"
-        "## Blocked\n"
-        "- pdfcoffee.com\n"
-        "- pdfdrive.com\n"
-        "- zlibrary.to\n",
-        encoding="utf-8",
-    )
+    # On first run after install, carry over a curated domains.md that ships
+    # alongside the source (if present) so existing customizations survive.
+    seed = APP_DIR / "domains.md"
+    if seed.exists() and seed.resolve() != DOMAINS_FILE.resolve():
+        try:
+            DOMAINS_FILE.write_text(seed.read_text(encoding="utf-8"), encoding="utf-8")
+            return
+        except OSError:
+            pass
+    DOMAINS_FILE.write_text(_DEFAULT_DOMAINS, encoding="utf-8")
 
 
 def _parse_domains() -> tuple[set[str], set[str]]:
@@ -692,21 +739,23 @@ def _try_youtube_captions(video_id: str) -> list[dict] | None:
 
 
 _PARAGRAPH_BREAK_PROMPT = (
-    "Below is a transcript chunk with embedded timestamp markers like <<00:00>> or <<01:23:45>>. "
-    "Clean it up and insert paragraph breaks.\n\n"
-    "Tasks:\n"
-    "1. Insert paragraph breaks (blank lines) at natural points: topic changes, speaker "
-    "transitions, shifts in thought, or after questions. Aim for paragraphs of roughly "
-    "3-8 sentences each — readable like a blog post.\n"
-    "2. Remove filler words and verbal hesitations such as: uh, uhh, um, umm, erm, "
-    "hmm, like (when used as filler), you know (when used as filler), I mean (when "
-    "used as filler), sort of/kind of (when used as filler), basically (when used as "
-    "filler). Also clean up false starts and repeated stutters (e.g. 'the the' -> 'the').\n\n"
-    "Rules:\n"
-    "- Do NOT change the meaning or substance of what is said\n"
-    "- Do NOT rewrite sentences or rephrase — only remove filler words\n"
-    "- Keep all <<timestamp>> markers exactly where they are\n"
-    "- Return ONLY the cleaned text with paragraph breaks added, no commentary\n\n"
+    "You are reformatting an auto-generated transcript into readable paragraphs.\n\n"
+    "The text below has a timestamp marker wrapped in guillemets (\u00ab \u00bb) before every "
+    "few words, e.g. \u00ab00:04\u00bb. They are dense because captions arrive every couple seconds.\n\n"
+    "YOUR JOB:\n"
+    "1. Insert a blank line to start a NEW PARAGRAPH at every natural topic shift, change of "
+    "thought, speaker transition, or after a question. Each paragraph should be roughly 3-8 "
+    "sentences and read like a blog post. A multi-minute talk should become MANY paragraphs, "
+    "not one giant block.\n"
+    "2. Remove filler words and verbal hesitations such as: uh, uhh, um, umm, erm, hmm, "
+    "like (filler), you know (filler), I mean (filler), sort of/kind of (filler), basically "
+    "(filler). Also clean up false starts and repeated stutters (e.g. 'the the' -> 'the').\n\n"
+    "RULES:\n"
+    "- You MUST insert paragraph breaks. Returning the text as one block is WRONG.\n"
+    "- Preserve every \u00ab...\u00bb marker EXACTLY as written, in place. Never convert \u00ab or "
+    "\u00bb into other characters (such as << >> or [ ]), and do not add, remove, or move markers.\n"
+    "- Do NOT change the meaning or rephrase sentences \u2014 only remove filler words and add breaks.\n"
+    "- Return ONLY the reformatted transcript, no commentary.\n\n"
     "Transcript:\n\n"
 )
 
@@ -772,7 +821,9 @@ def _captions_to_markdown(segments: list[dict]) -> str:
         broken_text = _add_paragraph_breaks(marked_text)
         if broken_text:
             raw_paragraphs = [p.strip() for p in broken_text.split("\n\n") if p.strip()]
-            marker_re = re.compile(r"\u00ab(\d{1,2}:\d{2}(?::\d{2})?)\u00bb")
+            # Accept the guillemet sentinels, but also tolerate a model that
+            # rewrote them as << >> despite instructions.
+            marker_re = re.compile(r"(?:\u00ab|<<)(\d{1,2}:\d{2}(?::\d{2})?)(?:\u00bb|>>)")
             result_paragraphs = []
             for para in raw_paragraphs:
                 m = marker_re.search(para)
@@ -1016,9 +1067,14 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    # Load .env
-    if ENV_FILE.exists():
-        load_dotenv(ENV_FILE, override=True)
+    # Load .env from the first candidate location that exists.
+    for candidate in _ENV_CANDIDATES:
+        if not candidate:
+            continue
+        path = Path(candidate).expanduser()
+        if path.exists():
+            load_dotenv(path, override=True)
+            break
 
     # PDF output dir override
     if args.output and not (args.query and _is_youtube_url(args.query)):

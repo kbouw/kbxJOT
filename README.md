@@ -18,12 +18,23 @@ brew install ffmpeg
 sudo apt install ffmpeg
 ```
 
-**3. Clone and configure:**
+**3. Clone and install as a command:**
 ```bash
 git clone <repo-url> && cd kbxJOT
-cp .env.example .env
+uv tool install .
 ```
-Then edit `.env` and add your keys:
+This installs a real `jot` executable to `~/.local/bin/jot` (make sure that's on your `PATH` — run `uv tool update-shell` once if needed). No shell alias required.
+
+> **Note:** macOS/BSD ship a built-in `jot` utility at `/usr/bin/jot`. The installed command shadows it only if `~/.local/bin` comes *before* `/usr/bin` on your `PATH` (the default with `uv tool update-shell`). Verify with `which jot` — it should print `~/.local/bin/jot`.
+>
+> Upgrade after pulling changes: `uv tool install --force .`  ·  Uninstall: `uv tool uninstall jot`
+
+**4. Configure your keys:**
+```bash
+mkdir -p ~/.config/jot
+cp .env.example ~/.config/jot/.env
+```
+Then edit `~/.config/jot/.env` and add your keys:
 
 | Key | Required? | What for | Get one at |
 |---|---|---|---|
@@ -31,13 +42,26 @@ Then edit `.env` and add your keys:
 | `ANTHROPIC_API_KEY` | Recommended | Transcript paragraph formatting & filler word removal | [console.anthropic.com](https://console.anthropic.com/) |
 | `ASSEMBLYAI_API_KEY` | For diarization / fallback | Transcription when no YouTube captions exist | [assemblyai.com](https://www.assemblyai.com/dashboard/signup) |
 
-**4. Add a shell alias:**
-```bash
-echo 'alias jot="uv run /path/to/kbxJOT/jot.py"' >> ~/.zshrc
-source ~/.zshrc
-```
+jot looks for `.env` in this order (first match wins):
+`$JOT_ENV_FILE` → `~/.config/jot/.env` → `./.env` (current directory) → next to the source.
 
-The first run takes ~10s extra while `uv` installs dependencies. After that it's cached.
+### Where jot stores its state
+
+All runtime state lives in `~/.config/jot/` (override with `JOT_CONFIG_DIR`; also respects `XDG_CONFIG_HOME`):
+
+| File | Purpose |
+|---|---|
+| `.env` | Your API keys |
+| `domains.md` | Allow/block lists for PDF search |
+| `config.json` | Persistent PDF download directory |
+| `.last_results.json` | Cache of the last search (for `--download N`, etc.) |
+
+### Running without installing (development)
+
+The script keeps its inline [PEP 723](https://peps.python.org/pep-0723/) dependency metadata, so you can run it directly during development without installing:
+```bash
+uv run jot.py 'https://www.youtube.com/watch?v=VIDEO_ID'
+```
 
 ## Quick start
 
