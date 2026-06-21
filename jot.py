@@ -739,21 +739,23 @@ def _try_youtube_captions(video_id: str) -> list[dict] | None:
 
 
 _PARAGRAPH_BREAK_PROMPT = (
-    "Below is a transcript chunk with embedded timestamp markers like <<00:00>> or <<01:23:45>>. "
-    "Clean it up and insert paragraph breaks.\n\n"
-    "Tasks:\n"
-    "1. Insert paragraph breaks (blank lines) at natural points: topic changes, speaker "
-    "transitions, shifts in thought, or after questions. Aim for paragraphs of roughly "
-    "3-8 sentences each — readable like a blog post.\n"
-    "2. Remove filler words and verbal hesitations such as: uh, uhh, um, umm, erm, "
-    "hmm, like (when used as filler), you know (when used as filler), I mean (when "
-    "used as filler), sort of/kind of (when used as filler), basically (when used as "
-    "filler). Also clean up false starts and repeated stutters (e.g. 'the the' -> 'the').\n\n"
-    "Rules:\n"
-    "- Do NOT change the meaning or substance of what is said\n"
-    "- Do NOT rewrite sentences or rephrase — only remove filler words\n"
-    "- Keep all <<timestamp>> markers exactly where they are\n"
-    "- Return ONLY the cleaned text with paragraph breaks added, no commentary\n\n"
+    "You are reformatting an auto-generated transcript into readable paragraphs.\n\n"
+    "The text below has a timestamp marker wrapped in guillemets (\u00ab \u00bb) before every "
+    "few words, e.g. \u00ab00:04\u00bb. They are dense because captions arrive every couple seconds.\n\n"
+    "YOUR JOB:\n"
+    "1. Insert a blank line to start a NEW PARAGRAPH at every natural topic shift, change of "
+    "thought, speaker transition, or after a question. Each paragraph should be roughly 3-8 "
+    "sentences and read like a blog post. A multi-minute talk should become MANY paragraphs, "
+    "not one giant block.\n"
+    "2. Remove filler words and verbal hesitations such as: uh, uhh, um, umm, erm, hmm, "
+    "like (filler), you know (filler), I mean (filler), sort of/kind of (filler), basically "
+    "(filler). Also clean up false starts and repeated stutters (e.g. 'the the' -> 'the').\n\n"
+    "RULES:\n"
+    "- You MUST insert paragraph breaks. Returning the text as one block is WRONG.\n"
+    "- Preserve every \u00ab...\u00bb marker EXACTLY as written, in place. Never convert \u00ab or "
+    "\u00bb into other characters (such as << >> or [ ]), and do not add, remove, or move markers.\n"
+    "- Do NOT change the meaning or rephrase sentences \u2014 only remove filler words and add breaks.\n"
+    "- Return ONLY the reformatted transcript, no commentary.\n\n"
     "Transcript:\n\n"
 )
 
@@ -819,7 +821,9 @@ def _captions_to_markdown(segments: list[dict]) -> str:
         broken_text = _add_paragraph_breaks(marked_text)
         if broken_text:
             raw_paragraphs = [p.strip() for p in broken_text.split("\n\n") if p.strip()]
-            marker_re = re.compile(r"\u00ab(\d{1,2}:\d{2}(?::\d{2})?)\u00bb")
+            # Accept the guillemet sentinels, but also tolerate a model that
+            # rewrote them as << >> despite instructions.
+            marker_re = re.compile(r"(?:\u00ab|<<)(\d{1,2}:\d{2}(?::\d{2})?)(?:\u00bb|>>)")
             result_paragraphs = []
             for para in raw_paragraphs:
                 m = marker_re.search(para)
