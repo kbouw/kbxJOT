@@ -83,13 +83,14 @@ def _sanitize_filename(title: str) -> str:
 
 
 def _get_video_metadata(url: str) -> dict:
+    """Fetch video metadata, using display-safe defaults for absent text fields."""
     import yt_dlp
     opts = {"quiet": True, "no_warnings": True, "skip_download": True}
     with yt_dlp.YoutubeDL(opts) as ydl:
         info = ydl.extract_info(url, download=False)
     return {
-        "title": info.get("title", "Untitled"),
-        "channel": info.get("channel", info.get("uploader", "Unknown")),
+        "title": info.get("title") or "Untitled",
+        "channel": info.get("channel") or info.get("uploader") or "Unknown",
         "duration": info.get("duration"),
         "upload_date": info.get("upload_date", ""),
     }

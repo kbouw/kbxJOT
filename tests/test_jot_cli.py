@@ -96,6 +96,7 @@ class WorkflowTests(unittest.TestCase):
             "OPENROUTER_API_KEY": "fixture-openrouter",
             "ASSEMBLYAI_API_KEY": "fixture-assembly",
         }, clear=True))
+        self.metadata_adapter = jot._get_video_metadata
         self.metadata = self.stack.enter_context(patch.object(
             jot, "_get_video_metadata", return_value=dict(_WORKFLOW_METADATA),
         ))
@@ -160,6 +161,33 @@ class WorkflowTests(unittest.TestCase):
         markdown = (self.directory / "Workflow Talk.md").read_text()
         self.assertIn("[00:01] Recovered speech", markdown)
         self.assertIn("| **Method** | AssemblyAI |", markdown)
+
+    def test_incomplete_provider_metadata_still_publishes_evidence(self):
+        self.metadata.side_effect = self.metadata_adapter
+        scenarios = (
+            ({}, "Untitled", "Unknown"),
+            ({"title": None, "channel": None}, "Untitled", "Unknown"),
+            ({"title": "", "channel": ""}, "Untitled", "Unknown"),
+            ({"title": "Named Talk", "channel": None, "uploader": "Known Uploader"},
+             "Named Talk", "Known Uploader"),
+        )
+        with patch("yt_dlp.YoutubeDL") as downloader:
+            provider = downloader.return_value.__enter__.return_value
+            for index, (metadata, title, channel) in enumerate(scenarios):
+                with self.subTest(metadata=metadata):
+                    provider.extract_info.return_value = metadata
+                    folder = self.directory / str(index)
+                    code, _, _ = self.run_command(evaluate=True, directory=folder)
+                    self.assertEqual(code, 0)
+                    markdown = (folder / f"{title}.evaluation.md").read_text()
+                    html = (folder / f"{title}.evaluation.html").read_text()
+                    self.assertIn(f"# {title}\n", markdown)
+                    self.assertIn(f"| **Channel** | {channel} |", markdown)
+                    self.assertIn(f"<dd>{channel}</dd>", html)
+                    payload = self.http.post.call_args.kwargs["json"]
+                    sent = json.loads(payload["messages"][1]["content"])["metadata"]
+                    self.assertEqual(sent["title"], title)
+                    self.assertEqual(sent["channel"], channel)
 
     def test_unknown_duration_is_not_zero_in_saved_page_or_model_input(self):
         for scenario in ("missing", "null", "failure"):

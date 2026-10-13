@@ -103,6 +103,8 @@ unavailable captions are reported separately. Audio configuration is checked bef
 downloading. Empty captions can fall back to audio, but empty final speech is
 rejected before evaluation or saving. Missing duration is displayed as `Unknown`,
 not `00:00`; caption provenance distinguishes manual and automatically generated text.
+Unavailable titles use `Untitled`; unavailable channels use the uploader when
+available, otherwise `Unknown`.
 
 Transcripts are saved as `<video title>.md`. Evaluations save `<video title>.evaluation.md` and `<video title>.evaluation.html`, including the source transcript. Existing video outputs are preserved by adding a numeric filename suffix.
 
