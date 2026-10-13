@@ -1,8 +1,29 @@
+# Secrets and local environments
 .env
+.env.*
+!.env.example
 .venv/
-__pycache__/
-*.pyc
-.last_results.json
-.config.json
-.claude/
+venv/
+
+# Generated transcripts and evaluation companions
 transcripts/
+evaluations/
+*.evaluation.md
+*.evaluation.html
+
+# Python caches and package outputs
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+build/
+dist/
+*.egg-info/
+
+# Workstation metadata and local tooling
+.DS_Store
+._*
+.claude/

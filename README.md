@@ -1,205 +1,151 @@
 # jot
 
-Source content from anywhere with one command. Pass a YouTube URL and get a clean, timestamped markdown transcript. Pass anything else and search for free PDFs across the web.
+Turn a YouTube video's speech into timestamped Markdown. Opt in to an OpenRouter evaluation to decide whether to **WATCH, SKIM, or SKIP**, then keep the evidence in a portable watch page.
 
-## Install
+Ordinary transcription preserves caption wording rather than rewriting or removing filler. Evaluation uses the same timestamped source and saves it alongside the report.
 
-**1. Install [uv](https://docs.astral.sh/uv/)** (runs the script and manages dependencies automatically):
+## Install from the repository
+
+Requires Python 3.10 or newer and [uv](https://docs.astral.sh/uv/getting-started/installation/).
+
 ```bash
-curl -LsSf https://astral.sh/uv/install.sh | sh
+git clone https://github.com/kbouw/kbxJOT.git jot
+cd jot
+uv sync
+uv run python jot.py --help
 ```
 
-**2. Install ffmpeg** (required for YouTube audio extraction when captions aren't available):
-```bash
-# Mac
-brew install ffmpeg
+For development, use `uv run python jot.py` or `uv run jot`; `pyproject.toml` and `uv.lock` manage the dependencies.
 
+To install the command outside the checkout:
+
+```bash
+uv tool install .
+uv tool update-shell
+jot --help
+```
+
+On macOS/BSD, `/usr/bin/jot` is a different utility. Put uv's executable directory before `/usr/bin` on your `PATH`; `which jot` shows which command will run. After pulling updates, reinstall with `uv tool install --force .`. Uninstall with `uv tool uninstall jot`.
+
+### Configuration
+
+Caption-based transcription needs no API key. Evaluation requires an [OpenRouter key](https://openrouter.ai/keys). The audio fallback and speaker diarization require an [AssemblyAI key](https://www.assemblyai.com/) and **ffmpeg** on your `PATH`:
+
+```bash
+# macOS
+brew install ffmpeg
 # Ubuntu/Debian
 sudo apt install ffmpeg
 ```
 
-**3. Clone and install as a command:**
-```bash
-git clone <repo-url> && cd kbxJOT
-uv tool install .
-```
-This installs a real `jot` executable to `~/.local/bin/jot` (make sure that's on your `PATH` — run `uv tool update-shell` once if needed). No shell alias required.
+Copy the configuration template and edit the copy:
 
-> **Note:** macOS/BSD ship a built-in `jot` utility at `/usr/bin/jot`. The installed command shadows it only if `~/.local/bin` comes *before* `/usr/bin` on your `PATH` (the default with `uv tool update-shell`). Verify with `which jot` — it should print `~/.local/bin/jot`.
->
-> Upgrade after pulling changes: `uv tool install --force .`  ·  Uninstall: `uv tool uninstall jot`
-
-**4. Configure your keys:**
 ```bash
 mkdir -p ~/.config/jot
 cp .env.example ~/.config/jot/.env
 ```
-Then edit `~/.config/jot/.env` and add your keys:
 
-| Key | Required? | What for | Get one at |
-|---|---|---|---|
-| `BRAVE_API_KEY` | For PDF search | Web search for free PDFs | [brave.com/search/api](https://brave.com/search/api/) |
-| `ANTHROPIC_API_KEY` | Recommended | Transcript paragraph formatting & filler word removal | [console.anthropic.com](https://console.anthropic.com/) |
-| `ASSEMBLYAI_API_KEY` | For diarization / fallback | Transcription when no YouTube captions exist | [assemblyai.com](https://www.assemblyai.com/dashboard/signup) |
-
-jot looks for `.env` in this order (first match wins):
-`$JOT_ENV_FILE` → `~/.config/jot/.env` → `./.env` (current directory) → next to the source.
-
-### Where jot stores its state
-
-All runtime state lives in `~/.config/jot/` (override with `JOT_CONFIG_DIR`; also respects `XDG_CONFIG_HOME`):
-
-| File | Purpose |
+| Variable | Purpose |
 |---|---|
-| `.env` | Your API keys |
-| `domains.md` | Allow/block lists for PDF search |
-| `config.json` | Persistent PDF download directory |
-| `.last_results.json` | Cache of the last search (for `--download N`, etc.) |
+| `OPENROUTER_API_KEY` | Required only for `--evaluate` |
+| `OPENROUTER_MODEL` | OpenRouter model ID; defaults to `anthropic/claude-sonnet-4.5` |
+| `ASSEMBLYAI_API_KEY` | Optional audio transcription fallback and diarization |
 
-### Running without installing (development)
+jot loads the **first existing** environment file in this order:
 
-The script keeps its inline [PEP 723](https://peps.python.org/pep-0723/) dependency metadata, so you can run it directly during development without installing:
-```bash
-uv run jot.py 'https://www.youtube.com/watch?v=VIDEO_ID'
-```
+1. `$JOT_ENV_FILE`
+2. The configuration directory's `.env` (normally `~/.config/jot/.env`)
+3. `./.env` in the current directory
+4. `.env` next to `jot.py`
 
-## Quick start
+`JOT_CONFIG_DIR` overrides the configuration directory; otherwise `$XDG_CONFIG_HOME/jot` is used when `XDG_CONFIG_HOME` is set. Values in the selected file override existing environment variables. To select the checkout's file explicitly:
 
 ```bash
-# Search for a PDF
-jot "Designing Data-Intensive Applications"
-
-# Transcribe a YouTube video
-jot 'https://www.youtube.com/watch?v=VIDEO_ID'
+JOT_ENV_FILE=.env uv run jot 'https://youtu.be/WkBPX-oDMnA' --evaluate
 ```
 
-jot detects YouTube URLs automatically. Everything else is treated as a PDF search query.
+Keep keys private; neither saved Markdown nor watch pages need API keys to read.
 
-## PDF search
+## Usage
 
 ```bash
-jot "Book Title"                      # Search for a PDF
-jot "DDIA" --author "Martin Kleppmann" # Search with author filter
-jot --download 3                       # Download result #3 to ~/Books/
-jot --open 3                           # Download and open in your PDF viewer
-jot --verify 3                         # Check PDF content without downloading
-jot --block 4                          # Block the domain of result #4
-jot --allow 2                          # Trust the domain of result #2
-jot --results                          # Re-display last search results
-jot --domains                          # Show allow/block lists
-jot "query" -o ~/PDFs                  # Custom download directory
-jot --path                             # Show current download directory
-jot --path ~/PDFs                      # Set persistent download directory
+# Timestamped transcript
+jot 'https://youtu.be/WkBPX-oDMnA'
+
+# Watch-value evaluation, with optional viewer context
+jot 'https://youtu.be/WkBPX-oDMnA' --evaluate
+jot 'https://youtu.be/WkBPX-oDMnA' --evaluate \
+  --background 'I know the basics and want concrete implementation techniques'
+
+# Select the output directory
+jot 'https://youtu.be/WkBPX-oDMnA' --evaluate -o ~/watch-notes
+
+# Force audio transcription, with or without speaker labels
+jot 'https://youtu.be/WkBPX-oDMnA' --skip-captions
+jot 'https://youtu.be/WkBPX-oDMnA' --diarize
 ```
 
-![PDF search results](assets/jot-pdf-example.png)
+| Argument or flag | Behavior |
+|---|---|
+| YouTube URL | Video to transcribe or evaluate |
+| `--evaluate` | Request an OpenRouter watch-value report and save Markdown plus HTML |
+| `--background TEXT` | Describe existing knowledge or learning goals; requires `--evaluate` |
+| `--diarize` | Use AssemblyAI audio transcription with speaker labels |
+| `--skip-captions` | Use AssemblyAI directly instead of checking captions |
+| `-o DIR`, `--output DIR` | Output directory; defaults to `./transcripts` for a video |
+| `--render-html FILE` | Render a saved evaluation Markdown file without an API request |
+| `--help` | Show command help |
 
-### How PDF search works
+The default path checks English YouTube captions first. If unavailable, jot extracts temporary audio using yt-dlp and ffmpeg and sends it to AssemblyAI. `--diarize` and `--skip-captions` force this audio path. Caption availability and accuracy vary; automatically generated captions can contain mistakes. Audio transcription and evaluation may incur provider charges. **Evaluation is never enabled by default.**
 
-1. Runs multiple query variations against Brave Search
-2. HEAD-checks each URL to confirm PDF content-type and file size
-3. Ranks results: trusted domains first, confirmed PDFs next, blocked domains last
-4. On download, verifies the PDF content matches your query before saving
-5. Downloads with a progress bar to `~/Books/` (configurable via `--path`)
+Caption fetch failures retain their cause in a warning before audio fallback;
+unavailable captions are reported separately. Audio configuration is checked before
+downloading. Empty captions can fall back to audio, but empty final speech is
+rejected before evaluation or saving. Missing duration is displayed as `Unknown`,
+not `00:00`; caption provenance distinguishes manual and automatically generated text.
 
-### Domain lists
+Transcripts are saved as `<video title>.md`. Evaluations save `<video title>.evaluation.md` and `<video title>.evaluation.html`, including the source transcript. Existing video outputs are preserved by adding a numeric filename suffix.
 
-jot ships with pre-configured allow/block lists in `domains.md`. Trusted sources (archive.org, gutenberg.org, arxiv.org, etc.) are ranked higher. Known piracy and spam domains are filtered out. You can edit `domains.md` directly or use `--block N` / `--allow N`.
+If Markdown saves but its HTML companion fails, jot exits with an error and reports
+the preserved Markdown path. Use `--render-html` to retry the companion without
+another evaluation request.
 
-## YouTube transcription
+## What an evaluation tells you
+
+The report gives a WATCH / SKIM / SKIP recommendation, intended audience, reasoning, and confidence. It covers concrete takeaways with timestamped quotes, novelty, high-value sections and skippable ranges, signal versus fluff, and evidence limitations. Stories and analogies are assessed separately from repetition, marketing, and housekeeping rather than automatically treated as padding.
+
+`--background` helps assess novelty **to you**. Without it, personal novelty is unknown. Novelty **to the field** and factual claims are not independently verified. This evaluates speech, not slides or visual demonstrations; confidence and timestamp boundaries are model judgments, not measured statistics.
+
+The full transcript must fit the selected model's context. Provider errors or incomplete responses stop evaluation rather than saving a partial report. Provider charges depend on the model and input/output length; consult the provider's current terms. The source speech is sent to OpenRouter for evaluation and, on the audio path, audio is sent to AssemblyAI for transcription.
+
+## Portable watch pages
+
+Each evaluation's HTML companion embeds the report, collapsible source transcript, Libron font files, Flexoki palettes, CSS, and JavaScript in **one file**. Share that file alone: no companion Markdown, fonts, application server, or keys are required. It is a saved snapshot, not a live evaluation.
+
+The reading order is Verdict, What you can learn, Worth watching, Signal versus fluff, Novelty, and collapsed Limits. Compact two-column section navigation keeps the page easy to scan. Takeaway headlines have their own line; High, Moderate, and Low ratings use filled, outlined, and dashed badges. Signal rows separate the category and rating from their explanation.
+
+The destination theme toggle says **Dark** in light mode and **Light** in dark mode. The first visit follows your system preference; manual choices persist across pages and reloads when browser storage is available. Without storage, switching still works on the current page. Without JavaScript, the page follows system preference and hides the toggle. The Flexoki palette uses CSS `light-dark()`, requiring a modern browser that supports it.
+
+Click a timestamp in the report or transcript to seek the embedded YouTube video. A range starts at its first timestamp; playback does not stop automatically at the range's end. Timestamp links still work as normal YouTube links without JavaScript.
+
+Re-render existing evaluation Markdown without another model request:
 
 ```bash
-jot 'https://www.youtube.com/watch?v=VIDEO_ID'                # Basic transcription
-jot 'https://www.youtube.com/watch?v=VIDEO_ID' --diarize      # Speaker diarization
-jot 'https://www.youtube.com/watch?v=VIDEO_ID' -o ~/notes     # Custom output directory
-jot 'https://www.youtube.com/watch?v=VIDEO_ID' --skip-captions # Skip captions, use AssemblyAI
+jot --render-html 'Talk title.evaluation.md'
+uv run python jot.py --render-html 'Talk title.evaluation.md' -o ~/watch-notes
 ```
 
-| Flag | Description |
-|---|---|
-| `--diarize` | Force speaker diarization via AssemblyAI |
-| `--output DIR` / `-o DIR` | Output directory (default: `./transcripts`) |
-| `--skip-captions` | Skip YouTube captions, use AssemblyAI directly |
+This writes or replaces the HTML companion, leaving Markdown unchanged. Without `-o`, it writes beside the input file. `--render-html` cannot be combined with a video URL or transcription/evaluation flags.
 
-### How transcription works
+**Reading works offline; playback requires internet.** YouTube may reject `file://` embeds or restrict embedding/autoplay for a video. Use the direct YouTube link, host the HTML on a static website, or serve your output directory locally:
 
-```
-YouTube URL
-    |
-    +---> [1] Fetch YouTube captions (free, instant)
-    |         +---> Found? ---> Claude cleans up + adds paragraph breaks ---> .md
-    |
-    +---> [2] No captions OR --diarize / --skip-captions
-              +---> Download audio (yt-dlp + ffmpeg)
-              +---> AssemblyAI transcription (+ speaker labels if diarized)
-                        +---> .md
+```bash
+python3 -m http.server 8765 --directory ~/watch-notes
+# Open http://localhost:8765/ and choose the HTML file.
 ```
 
-- **YouTube captions** cover ~90% of videos for free
-- **Claude Sonnet** handles paragraph formatting and filler word removal
-- **AssemblyAI** is the fallback for videos without captions, or when you want speaker diarization
+YouTube controls inside the iframe belong to YouTube, not jot. Inspect report claims and recommendations against the included transcript before relying on them.
 
-### Transcript output
+## Licenses
 
-Files save to `./transcripts/` by default, named after the video title.
-
-```markdown
-# How Transformers Work
-
-| | |
-|---|---|
-| **Channel** | 3Blue1Brown |
-| **Source** | <https://youtube.com/watch?v=...> |
-| **Uploaded** | 2025-01-15 |
-| **Duration** | 22:15 |
-| **Transcribed** | 2025-01-20 14:30 UTC |
-| **Method** | YouTube captions (auto-generated) |
-
----
-
-## Transcript
-
-[00:00] So today we're going to talk about transformers and why
-attention mechanisms are really the key insight here...
-
-[01:45] The fundamental idea is actually quite simple. Instead of
-processing a sequence one element at a time...
-```
-
-With `--diarize`, speaker labels are added:
-
-```markdown
-[00:00] **Speaker A:** Welcome back to the show. Today I'm joined by...
-
-[00:05] **Speaker B:** Thanks for having me. I've been thinking a lot about...
-```
-
-### Annotating transcripts
-
-After reading a transcript, you can mark high-value sections with HTML comment tags. These are invisible in rendered markdown but visible to LLMs, so when you feed the transcript into a future session the model knows what you valued most.
-
-```markdown
-<!-- value: high -->
-[45:30] The key insight is that software engineering has always been about
-balancing forces — technical, economic, and ethical...
-<!-- /value -->
-```
-
-## Cost
-
-| Feature | Cost | When |
-|---|---|---|
-| PDF search | Free | Uses Brave Search free tier (2,000 queries/month) |
-| YouTube captions | Free | Captions exist on the video |
-| Claude formatting | ~$0.01-0.05 | Per transcript (paragraph breaks + cleanup) |
-| AssemblyAI | ~$0.37/hr | No captions, or `--diarize` flag |
-
-## Troubleshooting
-
-| Problem | Fix |
-|---|---|
-| `BRAVE_API_KEY not set` | Add your key to `.env` |
-| "No English captions available" then API error | Set `ASSEMBLYAI_API_KEY` in `.env` |
-| "ffmpeg not found" | Install ffmpeg: `brew install ffmpeg` |
-| Audio download fails | Update yt-dlp: `uv tool install yt-dlp` |
-| Single giant paragraph (no breaks) | Set `ANTHROPIC_API_KEY` in `.env` |
+jot's code is licensed under the [MIT License](LICENSE). Bundled Libron v0.31 fonts retain their [SIL Open Font License 1.1](jot_assets/Libron-LICENSE.txt); the Flexoki palette retains its [MIT license](jot_assets/Flexoki-LICENSE.txt). Both third-party notices are distributed with the package and embedded in generated watch pages.
