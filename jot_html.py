@@ -182,6 +182,7 @@ def _parse_document(document: str) -> tuple[str, dict[str, str], str, str, str]:
     Channel, Source, Duration, Transcribed and Method; Uploaded is optional.
     Source may be a plain URL, an angle autolink or a Markdown link. Duration is
     display text (including Unknown), not a required numeric measurement.
+    Table values escape literal pipes and backslashes; decode only those pairs.
     Exactly one '## Watch-value evaluation' precedes the final '## Transcript'.
     A terminal '---' separates the nonempty evaluation from nonempty source
     speech. Evaluation may contain its own Transcript heading; the final one
@@ -217,7 +218,7 @@ def _parse_document(document: str) -> tuple[str, dict[str, str], str, str, str]:
             continue
         if key in metadata:
             raise ValueError(f"Invalid saved evaluation: duplicate {key} metadata.")
-        metadata[key] = row.group(2).strip().replace(r"\|", "|")
+        metadata[key] = re.sub(r"\\([\\|])", r"\1", row.group(2).strip())
     for key in _REQUIRED_METADATA:
         if not metadata.get(key):
             raise ValueError(f"Invalid saved evaluation: missing {key} metadata.")

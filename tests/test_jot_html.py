@@ -5,6 +5,8 @@ import re
 import unittest
 from urllib.parse import parse_qs, urlsplit
 
+from markdown_it import MarkdownIt
+
 from jot_html import build_evaluation_html
 from jot import _build_transcript_markdown
 
@@ -120,6 +122,23 @@ class EvaluationHTMLTests(unittest.TestCase):
         output = build_evaluation_html(document)
         self.assertIsInstance(output, str)
         return _ParsedHTML(output)
+
+    def test_channel_delimiters_round_trip_through_markdown_and_watch_page(self):
+        for channel in ("Build | Research", r"Build\Learn | Research", r"Build\|Research"):
+            with self.subTest(channel=channel):
+                document = _build_transcript_markdown(
+                    {"title": "Channel details", "channel": channel, "duration": None},
+                    "[00:04] Original evidence.", f"https://youtu.be/{_VIDEO_ID}",
+                    "YouTube captions (manual)", "## Verdict\n\n**WATCH** — Evidence.",
+                )
+                markdown = _ParsedHTML(MarkdownIt("commonmark").enable("table").render(document))
+                channel_rows = [
+                    [cell.text for cell in markdown.elements if cell.tag == "td" and cell.parent is row]
+                    for row in markdown.elements if row.tag == "tr"
+                ]
+                self.assertIn(["Channel", channel], channel_rows)
+                watch_page = self.render(document)
+                self.assertIn(channel, [cell.text for cell in watch_page.elements if cell.tag == "dd"])
 
     def test_actual_serializer_and_renderer_preserve_the_shared_envelope(self):
         source = f"https://youtu.be/{_VIDEO_ID}?si=source-token"

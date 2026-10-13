@@ -221,7 +221,7 @@ def _build_transcript_markdown(
     The report and timestamped transcript are preserved, not reformatted here.
     """
     title = metadata["title"]
-    channel = metadata["channel"]
+    channel = metadata["channel"].replace("\\", r"\\").replace("|", r"\|")
     duration_str = _format_duration(metadata.get("duration"))
     upload_date = metadata.get("upload_date", "")
     if upload_date:
