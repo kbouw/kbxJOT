@@ -1,0 +1,20 @@
+README.md
+  h_df085a9da41ca5 17,43
+jot_agent.py
+  h_df085a9da41ca5 83-90
+jot_assets/agent-workflow.md
+  h_df085a9da41ca5 15
+tests/test_jot_agent.py
+  h_df085a9da41ca5 438-474
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "73f1ed4f26cae52cddcdef4a0ff3792d3765e5f2",
+  "prompts": {},
+  "humans": {
+    "h_df085a9da41ca5": {
+      "author": "Kristian Bouw <kbouw@hey.com>"
+    }
+  }
+}
