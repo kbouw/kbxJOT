@@ -1,0 +1,14 @@
+README.md
+  h_df085a9da41ca5 3,5,12,15,18,30,32-75,84,93,95,97,110,112,115,118-119,121-125,134-139,141,144-145,148,150,154,158-163,165,167,169,173,177,179,192
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "9d514278544be7c1bd9163307a5b875b332ee1a3",
+  "prompts": {},
+  "humans": {
+    "h_df085a9da41ca5": {
+      "author": "Kristian Bouw <kbouw@hey.com>"
+    }
+  }
+}
