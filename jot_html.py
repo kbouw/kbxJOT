@@ -175,41 +175,26 @@ def _decorate_inline(tokens: list[Token], video_id: str) -> list[Token]:
     return decorated
 
 
-def _parse_document(document: str) -> tuple[str, dict[str, str], str, str, str]:
-    """Parse the saved-Markdown envelope shared with jot._build_transcript_markdown.
+_EVALUATION_HEADING = re.compile(
+    r"(?:^|(?<=[\r\n]))## Watch-value evaluation[ \t]*(?=\r\n|\r|\n|$)"
+)
+_TRANSCRIPT_HEADING = re.compile(
+    r"(?:^|(?<=[\r\n]))## Transcript[ \t]*(?=\r\n|\r|\n|$)"
+)
 
-    The first line is '# title', followed by a two-column metadata table with
-    Channel, Source, Duration, Transcribed and Method; Uploaded is optional.
-    Source may be a plain URL, an angle autolink or a Markdown link. Duration is
-    display text (including Unknown), not a required numeric measurement.
-    Table values escape literal pipes and backslashes; decode only those pairs.
-    Exactly one '## Watch-value evaluation' precedes the final '## Transcript'.
-    A terminal '---' separates the nonempty evaluation from nonempty source
-    speech. Evaluation may contain its own Transcript heading; the final one
-    owns the source. Ordinary transcripts omit the evaluation and are not input
-    to this renderer. Return normalized metadata, preserving report/source text.
-    """
-    if not isinstance(document, str) or not document.strip():
-        raise ValueError("Invalid saved evaluation: the document is empty.")
-    document = document.replace("\r\n", "\n").replace("\r", "\n").lstrip("\ufeff")
-    lines = document.splitlines()
-    title_match = re.fullmatch(r"#\s+(.+?)\s*", lines[0])
+
+def _parse_saved_header(header: str) -> tuple[str, dict[str, str], str]:
+    """Validate shared title/metadata rules and normalize the YouTube Source."""
+    lines = header.replace("\r\n", "\n").replace("\r", "\n").lstrip("\ufeff").splitlines()
+    title_match = re.fullmatch(r"#\s+(.+?)\s*", lines[0]) if lines else None
     if not title_match or not title_match.group(1).strip():
         raise ValueError("Invalid saved evaluation: expected a '# title' first line.")
-    evaluation_matches = list(re.finditer(r"^## Watch-value evaluation\s*$", document, re.MULTILINE))
-    transcript_matches = list(re.finditer(r"^## Transcript\s*$", document, re.MULTILINE))
-    if len(evaluation_matches) != 1 or not transcript_matches:
-        raise ValueError("Invalid saved evaluation: expected Watch-value evaluation and Transcript sections.")
-    evaluation_heading = evaluation_matches[0]
-    # The final Transcript heading belongs to the source, not a similarly named
-    # section the evaluator might have produced in its own Markdown.
-    transcript_heading = transcript_matches[-1]
-    if transcript_heading.start() <= evaluation_heading.end():
-        raise ValueError("Invalid saved evaluation: Transcript must follow the evaluation.")
     metadata: dict[str, str] = {}
-    for line in document[:evaluation_heading.start()].splitlines()[1:]:
-        row = re.fullmatch(r"\|\s*(.*?)\s*\|\s*(.*?)\s*\|\s*", line)
+    for line in lines[1:]:
+        row = re.fullmatch(r"\|\s*((?:\\.|[^|])*)\|\s*((?:\\.|[^|])*)\|\s*", line)
         if not row:
+            if line.lstrip().startswith("|"):
+                raise ValueError("Invalid saved evaluation: malformed metadata table row.")
             continue
         key = row.group(1).strip()
         if key.startswith("**") and key.endswith("**"):
@@ -232,6 +217,107 @@ def _parse_document(document: str) -> tuple[str, dict[str, str], str, str, str]:
     video_id = _youtube_id(source)
     if not video_id:
         raise ValueError("Invalid saved evaluation: Source must be a YouTube URL with an 11-character video ID.")
+    metadata["Source"] = source
+    return title_match.group(1), metadata, video_id
+
+
+def _parse_transcript_envelope(document: str) -> tuple[str, dict[str, str], str, int]:
+    """Locate the plain envelope in original text, retaining attachment offsets."""
+    if not isinstance(document, str) or not document.strip():
+        raise ValueError("Invalid saved transcript: the document is empty.")
+    transcript_heading = _TRANSCRIPT_HEADING.search(document)
+    if not transcript_heading:
+        raise ValueError("Invalid saved transcript: expected a Transcript section.")
+    header = document[:transcript_heading.start()]
+    if _EVALUATION_HEADING.search(header):
+        raise ValueError("Invalid saved transcript: an evaluation is already attached.")
+    title, metadata, _ = _parse_saved_header(header)
+    # Remove only envelope-owned newlines, not source whitespace or line endings.
+    transcript = document[transcript_heading.end():]
+    transcript = re.sub(r"^(?:\r\n|\r|\n){1,2}", "", transcript, count=1)
+    transcript = re.sub(r"(?:\r\n|\r|\n)\Z", "", transcript, count=1)
+    if not transcript.strip():
+        raise ValueError("Invalid saved transcript: the transcript must contain text.")
+    return title, metadata, transcript, transcript_heading.start()
+
+
+def parse_transcript_document(document: str) -> tuple[str, dict[str, str], str]:
+    """Read an ordinary saved transcript, raising ValueError for bad envelopes.
+
+    Return its title, metadata using display keys (Channel, Source, Duration,
+    Transcribed, Method and optional Uploaded), and unchanged source text.
+    Source is normalized from a plain URL, autolink or Markdown link to the
+    underlying YouTube URL; Duration remains display text, including 00:00 or
+    Unknown. Literal table pipes/backslashes are decoded. The heading's blank
+    line and one terminal envelope newline are excluded from the source.
+    Evaluated documents and empty speech are rejected. Headings inside source
+    speech are content, never additional envelope sections.
+    """
+    title, metadata, transcript, _ = _parse_transcript_envelope(document)
+    return title, metadata, transcript
+
+
+def add_evaluation(document: str, report: str) -> str:
+    """Attach one nonempty Markdown report to a valid ordinary saved transcript.
+
+    Preserve the original title, metadata table, source speech and line endings
+    verbatim, inserting only the Watch-value evaluation section and its terminal
+    separator. Raise ValueError for malformed/already-evaluated documents,
+    blank reports, or reports/source headings that make the envelope ambiguous.
+    The result is valid input to build_evaluation_html.
+    """
+    _, _, _, transcript_start = _parse_transcript_envelope(document)
+    if not isinstance(report, str) or not report.strip():
+        raise ValueError("Invalid evaluation report: the report must contain text.")
+    newline = re.search(r"\r\n|\r|\n", document)
+    line_ending = newline.group() if newline else "\n"
+    attachment = (
+        f"## Watch-value evaluation{line_ending}{line_ending}"
+        f"{report}{line_ending}{line_ending}---{line_ending}{line_ending}"
+    )
+    evaluated = document[:transcript_start] + attachment + document[transcript_start:]
+    _parse_document(evaluated)
+    return evaluated
+
+
+def _parse_document(document: str) -> tuple[str, dict[str, str], str, str, str]:
+    """Parse the saved-Markdown envelope shared with jot._build_transcript_markdown.
+
+    The first line is '# title', followed by a two-column metadata table with
+    Channel, Source, Duration, Transcribed and Method; Uploaded is optional.
+    Source may be a plain URL, an angle autolink or a Markdown link. Duration is
+    display text (including Unknown), not a required numeric measurement.
+    Table values escape literal pipes and backslashes; decode only those pairs.
+    Exactly one envelope '## Watch-value evaluation' precedes '## Transcript'.
+    A terminal '---' separates the nonempty evaluation from nonempty source
+    speech. Inner Transcript headings without that separator remain content;
+    multiple possible source boundaries are rejected. Ordinary transcripts omit
+    the evaluation and are not input to this renderer.
+    """
+    if not isinstance(document, str) or not document.strip():
+        raise ValueError("Invalid saved evaluation: the document is empty.")
+    document = document.replace("\r\n", "\n").replace("\r", "\n").lstrip("\ufeff")
+    evaluation_matches = list(re.finditer(r"^## Watch-value evaluation\s*$", document, re.MULTILINE))
+    transcript_matches = list(re.finditer(r"^## Transcript\s*$", document, re.MULTILINE))
+    if not evaluation_matches or not transcript_matches:
+        raise ValueError("Invalid saved evaluation: expected Watch-value evaluation and Transcript sections.")
+    evaluation_heading = evaluation_matches[0]
+    boundaries = [
+        heading for heading in transcript_matches
+        if heading.start() > evaluation_heading.end()
+        and re.search(
+            r"(?:^|\n)---[ \t]*\n*\Z",
+            document[evaluation_heading.end():heading.start()],
+        )
+    ]
+    if not boundaries:
+        raise ValueError("Invalid saved evaluation: expected '---' before Transcript.")
+    if len(boundaries) != 1:
+        raise ValueError("Invalid saved evaluation: ambiguous Transcript boundaries.")
+    transcript_heading = boundaries[0]
+    if sum(heading.start() < transcript_heading.start() for heading in evaluation_matches) != 1:
+        raise ValueError("Invalid saved evaluation: duplicate Watch-value evaluation sections.")
+    title, metadata, video_id = _parse_saved_header(document[:evaluation_heading.start()])
     evaluation = document[evaluation_heading.end():transcript_heading.start()].strip("\n")
     separator = re.search(r"(?:^|\n)---[ \t]*\n*\Z", evaluation)
     if not separator:
@@ -240,8 +326,7 @@ def _parse_document(document: str) -> tuple[str, dict[str, str], str, str, str]:
     transcript = document[transcript_heading.end():].strip("\n")
     if not evaluation.strip() or not transcript.strip():
         raise ValueError("Invalid saved evaluation: evaluation and transcript must both contain text.")
-    metadata["Source"] = source
-    return title_match.group(1), metadata, evaluation, transcript, video_id
+    return title, metadata, evaluation, transcript, video_id
 
 
 def _section_label(section: list[Token]) -> str:
