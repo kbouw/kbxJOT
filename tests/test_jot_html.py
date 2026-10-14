@@ -7,7 +7,7 @@ from urllib.parse import parse_qs, urlsplit
 
 from markdown_it import MarkdownIt
 
-from jot_html import build_evaluation_html
+from jot_html import add_evaluation, build_evaluation_html, parse_transcript_document
 from jot import _build_transcript_markdown
 
 
@@ -95,6 +95,10 @@ def _saved_evaluation(
     report="## Verdict\n\n**WATCH** — Clear, practical advice.\n\n## Worth watching\n\nRead the evidence at [04:32].",
     transcript="[00:01] Opening words.\n\n[04:32] A concrete example.",
 ):
+    evaluation = (
+        f"## Watch-value evaluation\n\n{report}\n\n---\n\n"
+        if report is not None else ""
+    )
     return (
         f"# {title}\n\n"
         "| | |\n|---|---|\n"
@@ -104,8 +108,7 @@ def _saved_evaluation(
         f"| **Duration** | {duration} |\n"
         f"| **Transcribed** | {transcribed} |\n"
         f"| **Method** | {method} |\n\n"
-        "---\n\n## Watch-value evaluation\n\n"
-        f"{report}\n\n---\n\n## Transcript\n\n{transcript}\n"
+        f"---\n\n{evaluation}## Transcript\n\n{transcript}\n"
     )
 
 
@@ -115,6 +118,193 @@ def _inside(node, ancestor):
             return True
         node = node.parent
     return False
+
+
+class TranscriptDocumentTests(unittest.TestCase):
+    def test_actual_saved_transcripts_decode_metadata_and_preserve_source(self):
+        source = f"https://youtu.be/{_VIDEO_ID}?si=source-token"
+        transcript = (
+            "\n  [00:00] Original <quoted> text & evidence.  \n\n"
+            "## Transcript\n\nAn inner source heading.\n\n"
+            "## Watch-value evaluation\n\nThese are spoken source words.\n\n"
+        )
+        for channel in ("Build | Research", r"Build\Learn | Research", r"Build\|Research"):
+            for duration, display in ((None, "Unknown"), (0, "00:00")):
+                with self.subTest(channel=channel, duration=duration):
+                    document = _build_transcript_markdown(
+                        {"title": "Source title", "channel": channel, "duration": duration},
+                        transcript, source, "YouTube captions (manual)",
+                    )
+                    title, metadata, speech = parse_transcript_document(document)
+                    self.assertEqual(title, "Source title")
+                    self.assertEqual(metadata["Channel"], channel)
+                    self.assertEqual(metadata["Source"], source)
+                    self.assertEqual(metadata["Duration"], display)
+                    self.assertEqual(metadata["Uploaded"], "")
+                    self.assertEqual(metadata["Method"], "YouTube captions (manual)")
+                    self.assertTrue(metadata["Transcribed"])
+                    self.assertEqual(speech, transcript)
+                    evaluated = add_evaluation(document, "## Verdict\n\n**WATCH** — Evidence.")
+                    parsed = _ParsedHTML(build_evaluation_html(evaluated))
+                    self.assertIn(channel, parsed.visible_text)
+                    self.assertIn("An inner source heading.", parsed.visible_text)
+                    self.assertIn("These are spoken source words.", parsed.visible_text)
+
+    def test_source_forms_are_normalized_without_rewriting_original_metadata(self):
+        source = f"https://youtu.be/{_VIDEO_ID}?si=source-token"
+        for value in (source, f"<{source}>", f"[Original upload]({source})"):
+            with self.subTest(value=value):
+                plain = _saved_evaluation(source=source, report=None).replace(
+                    f"| **Source** | <{source}> |", f"| **Source** | {value} |", 1,
+                )
+                _, metadata, speech = parse_transcript_document(plain)
+                self.assertEqual(metadata["Source"], source)
+                self.assertEqual(speech, "[00:01] Opening words.\n\n[04:32] A concrete example.")
+                attached = add_evaluation(plain, "## Verdict\n\n**SKIM** — Relevant example.")
+                self.assertIn(f"| **Source** | {value} |", attached)
+                parsed = _ParsedHTML(build_evaluation_html(attached))
+                self.assertIn(source, [anchor.attrs.get("href") for anchor in parsed.anchors])
+
+    def test_attachment_matches_existing_evaluated_envelope_and_html_bytes(self):
+        report = (
+            "## Verdict\n\n**WATCH** — Supported advice.\n\n"
+            "## Transcript\n\nAn inner heading in the report.\n\n"
+            "## Worth watching\n\nThe example begins at [04:32]."
+        )
+        plain = _saved_evaluation(report=None)
+        attached = add_evaluation(plain, report)
+        existing = _saved_evaluation(report=report)
+        self.assertEqual(attached, existing)
+        self.assertEqual(build_evaluation_html(attached), build_evaluation_html(existing))
+        with self.assertRaises(ValueError):
+            build_evaluation_html(plain)
+        with self.assertRaises(ValueError):
+            parse_transcript_document(attached)
+        with self.assertRaises(ValueError):
+            add_evaluation(attached, report)
+
+    def test_attachment_preserves_bom_line_endings_metadata_and_source_verbatim(self):
+        source = f"https://youtube.com/shorts/{_VIDEO_ID}?feature=share"
+        transcript = (
+            "  [00:00] Literal leading and trailing spaces.  \n\n"
+            "## Transcript\n\nA source-internal heading.\n"
+            "## Watch-value evaluation\n\nA source-internal evaluation heading.\n\n"
+        )
+        original = _saved_evaluation(source=source, report=None, transcript=transcript)
+        original = original.replace(
+            f"| **Source** | <{source}> |",
+            f"| **Source** | [Original source]({source}) |", 1,
+        ).replace(
+            "| **Uploaded** | 2026-07-10 |",
+            "| **Uploaded** | 2026-07-10 |\n| **Provenance** | Kept verbatim |", 1,
+        )
+        report = "## Verdict\n\n**WATCH** — Grounded explanation."
+        for ending in ("\n", "\r\n", "\r"):
+            for bom in ("", "\ufeff"):
+                with self.subTest(ending=repr(ending), bom=bool(bom)):
+                    plain = bom + original.replace("\n", ending)
+                    title, metadata, speech = parse_transcript_document(plain)
+                    self.assertEqual(title, "A useful talk & careful evidence")
+                    self.assertEqual(metadata["Provenance"], "Kept verbatim")
+                    self.assertEqual(metadata["Source"], source)
+                    self.assertEqual(speech, transcript.replace("\n", ending))
+                    header, source_section = plain.split("## Transcript", 1)
+                    attachment = (
+                        f"## Watch-value evaluation{ending}{ending}"
+                        f"{report}{ending}{ending}---{ending}{ending}"
+                    )
+                    attached = add_evaluation(plain, report)
+                    self.assertEqual(attached, header + attachment + "## Transcript" + source_section)
+                    self.assertIn(
+                        "A source-internal heading.",
+                        _ParsedHTML(build_evaluation_html(attached)).visible_text,
+                    )
+
+    def test_empty_or_malformed_plain_envelopes_are_rejected_by_both_helpers(self):
+        plain = _saved_evaluation(report=None)
+        cases = {
+            "nontext": None,
+            "empty": "",
+            "whitespace": " \n\t ",
+            "BOM only": "\ufeff",
+            "heading only": "## Transcript\n\nWords.",
+            "missing title": plain.replace("# A useful talk & careful evidence\n", "", 1),
+            "empty title": plain.replace("# A useful talk & careful evidence", "# ", 1),
+            "missing transcript": plain.replace("## Transcript", "## Captions", 1),
+            "empty source speech": _saved_evaluation(report=None, transcript=""),
+            "blank source speech": _saved_evaluation(report=None, transcript=" \n\t "),
+            "duplicate metadata": plain.replace(
+                "| **Channel** | A practitioner channel |",
+                "| **Channel** | One |\n| **Channel** | Two |", 1,
+            ),
+            "extra metadata column": plain.replace(
+                "| **Channel** | A practitioner channel |",
+                "| **Channel** | One | Two |", 1,
+            ),
+            "broken metadata row": plain.replace(
+                "| **Method** | YouTube captions (auto-generated) |",
+                "| **Method** | YouTube captions (auto-generated)", 1,
+            ),
+            "evaluated": _saved_evaluation(),
+            "duplicate evaluation": _saved_evaluation().replace(
+                "## Watch-value evaluation",
+                "## Watch-value evaluation\n\n## Watch-value evaluation", 1,
+            ),
+        }
+        for key in ("Channel", "Source", "Duration", "Transcribed", "Method"):
+            row = next(line for line in plain.splitlines() if line.startswith(f"| **{key}** |"))
+            cases[f"missing {key}"] = plain.replace(row + "\n", "", 1)
+            cases[f"blank {key}"] = plain.replace(row, f"| **{key}** |   |", 1)
+        for name, document in cases.items():
+            for helper in (parse_transcript_document, lambda value: add_evaluation(value, "Report.")):
+                with self.subTest(case=name, helper=helper):
+                    with self.assertRaises(ValueError) as raised:
+                        helper(document)
+                    self.assertTrue(str(raised.exception).strip())
+
+    def test_invalid_source_urls_are_rejected_before_attachment(self):
+        sources = (
+            "https://youtu.be/short",
+            "https://youtu.be/WkBPX-oDMnAA",
+            f"https://youtu.be/{_VIDEO_ID}/extra",
+            f"https://www.youtube.com/watch?v={_VIDEO_ID}&v={_OTHER_VIDEO_ID}",
+            f"https://youtube.com.evil.example/watch?v={_VIDEO_ID}",
+            f"https://www.youtube.com@evil.example/watch?v={_VIDEO_ID}",
+            f"https://www.youtube.com:443/watch?v={_VIDEO_ID}",
+            f"file:///watch?v={_VIDEO_ID}",
+            f"javascript:alert('{_VIDEO_ID}')",
+        )
+        for source in sources:
+            with self.subTest(source=source):
+                document = _saved_evaluation(source=source, report=None)
+                with self.assertRaises(ValueError):
+                    parse_transcript_document(document)
+                with self.assertRaises(ValueError):
+                    add_evaluation(document, "Report.")
+
+    def test_blank_duplicate_or_ambiguous_reports_cannot_be_attached(self):
+        plain = _saved_evaluation(report=None)
+        reports = (
+            None, "", " \n\t ",
+            "## Watch-value evaluation\n\nDuplicate envelope.",
+            "Evidence.\n\n---\n\n## Transcript\n\nAn ambiguous report boundary.",
+        )
+        for report in reports:
+            with self.subTest(report=report):
+                with self.assertRaises(ValueError) as raised:
+                    add_evaluation(plain, report)
+                self.assertTrue(str(raised.exception).strip())
+        ambiguous_source = _saved_evaluation(
+            report=None,
+            transcript="Opening.\n\n---\n\n## Transcript\n\nAmbiguous source boundary.",
+        )
+        self.assertIn("Ambiguous source boundary.", parse_transcript_document(ambiguous_source)[2])
+        with self.assertRaises(ValueError):
+            add_evaluation(ambiguous_source, "Report.")
+        with self.assertRaises(ValueError):
+            build_evaluation_html(_saved_evaluation(
+                report="Evidence.\n\n---\n\n## Transcript\n\nAmbiguous report boundary.",
+            ))
 
 
 class EvaluationHTMLTests(unittest.TestCase):

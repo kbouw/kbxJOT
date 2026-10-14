@@ -1,7 +1,7 @@
 [project]
 name = "jot"
 version = "0.1.0"
-description = "Timestamped YouTube transcripts, opt-in OpenRouter watch-value evaluations, and portable watch pages."
+description = "Timestamped YouTube transcripts, provider-neutral agent evaluations, optional OpenRouter, and portable watch pages."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
@@ -13,6 +13,7 @@ dependencies = [
     "yt-dlp>=2024.0.0",
     "assemblyai>=0.35.0",
     "markdown-it-py>=3.0.0",
+    "jsonschema>=4.23.0",
 ]
 
 [project.scripts]
@@ -26,6 +27,10 @@ build-backend = "hatchling.build"
 only-include = [
     "jot.py",
     "jot_html.py",
+    "jot_agent.py",
+    "jot_assets/agent-workflow.md",
+    "jot_assets/evaluation-rubric.md",
+    "jot_assets/evaluation-response.schema.json",
     "jot_assets/Libron-Regular.woff2",
     "jot_assets/Libron-Bold.woff2",
     "jot_assets/Libron-Italic.woff2",
@@ -38,6 +43,10 @@ only-include = [
 only-include = [
     "jot.py",
     "jot_html.py",
+    "jot_agent.py",
+    "jot_assets/agent-workflow.md",
+    "jot_assets/evaluation-rubric.md",
+    "jot_assets/evaluation-response.schema.json",
     "jot_assets/Libron-Regular.woff2",
     "jot_assets/Libron-Bold.woff2",
     "jot_assets/Libron-Italic.woff2",
