@@ -75,9 +75,14 @@ def _filename(title: str) -> str:
 
 
 def _write_new(path: Path, text: str) -> None:
-    # Exclusive creation prevents a concurrent publisher from overwriting a file.
-    with path.open("x", encoding="utf-8", newline="") as stream:
-        stream.write(text)
+    # Only remove files created here; exclusive-open failures leave existing files intact.
+    stream = path.open("x", encoding="utf-8", newline="")
+    try:
+        with stream:
+            stream.write(text)
+    except OSError:
+        path.unlink()
+        raise
 
 
 def prepare_evaluation(source: Path, background: str | None = None, output_dir: Path | None = None) -> Path:
