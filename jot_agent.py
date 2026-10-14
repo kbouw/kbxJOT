@@ -80,8 +80,14 @@ def _write_new(path: Path, text: str) -> None:
     try:
         with stream:
             stream.write(text)
-    except OSError:
-        path.unlink()
+    except Exception as write_error:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError as cleanup_error:
+            raise OSError(
+                f"Cannot write {path}: {write_error}; "
+                f"cannot remove incomplete file: {cleanup_error}"
+            ) from write_error
         raise
 
 

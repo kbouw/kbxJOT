@@ -435,6 +435,43 @@ class AgentWorkflowTests(unittest.TestCase):
                     jot_agent._write_new(path, "replacement output")
                 self.assertEqual(path.read_text(), "existing output")
 
+    def test_encoding_failure_removes_new_output(self):
+        path = self.directory / "encoding.evaluation.html"
+        with self.assertRaises(UnicodeEncodeError):
+            jot_agent._write_new(path, "\ud800")
+        self.assertFalse(path.exists())
+
+    def test_cleanup_failure_reports_original_write_error_and_cleanup_error(self):
+        original_open = Path.open
+
+        class FailingStream:
+            def __init__(self, stream):
+                self.stream = stream
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                self.stream.close()
+
+            def write(self, text):
+                self.stream.write(text[:7])
+                self.stream.flush()
+                raise OSError("fixture original disk failure")
+
+        def failing_open(path, *args, **kwargs):
+            return FailingStream(original_open(path, *args, **kwargs))
+
+        path = self.directory / "cleanup.evaluation.html"
+        with patch.object(Path, "open", failing_open), \
+                patch.object(Path, "unlink", side_effect=PermissionError("fixture cleanup denial")):
+            with self.assertRaises(OSError) as raised:
+                jot_agent._write_new(path, "complete output")
+        self.assertIn("fixture original disk failure", str(raised.exception))
+        self.assertIn("fixture cleanup denial", str(raised.exception))
+        self.assertEqual(str(raised.exception.__cause__), "fixture original disk failure")
+        self.assertEqual(path.read_text(), "complet")
+
     def test_render_failure_creates_no_outputs(self):
         with patch.object(jot_agent, "build_evaluation_html", side_effect=ValueError("fixture rendering failure")):
             self.rejected("fixture rendering failure")

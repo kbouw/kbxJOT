@@ -13,10 +13,8 @@ A chat-only assistant is not enough for this automatic workflow. jot provides th
 
 ## Set up once
 
-The assistant workflow is currently available on the `feat/agent-driven-evaluations` branch:
-
 ```bash
-git clone --branch feat/agent-driven-evaluations https://github.com/kebaux/kbxJOT.git jot
+git clone https://github.com/kebaux/kbxJOT.git jot
 cd jot
 uv sync
 ```
@@ -42,7 +40,7 @@ Optionally add your background or learning goal—for example, “I know the bas
 
 Open the delivered `.evaluation.html` file in a modern browser. It is self-contained: share the HTML file alone, with no companion assets or API keys. If your assistant runs remotely, it must provide a downloadable file rather than a path on its own machine.
 
-- **Captions unavailable?** The default workflow stops and explains why. Another transcription source is needed; paid transcription requires your permission.
+- **English captions unavailable?** The default workflow requires English captions and stops if they are unavailable, even when captions exist in another language. Another transcription source is needed; paid transcription requires your permission.
 - **Reading works offline; video playback needs internet.** If the embedded video is blocked, use the page's direct YouTube link.
 
 The assessment is based on speech, not slides or visual demonstrations. Check important claims against the included transcript; validation does not establish factual truth.

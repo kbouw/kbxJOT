@@ -12,7 +12,7 @@ The host agent coordinates capture and publication; a separate fresh evaluator m
 5. Receive a response file, then call `jot --publish-evaluation REQUEST.json --report RESPONSE.json [-o DIR]`. Do not edit the evaluator's recommendation. On validation failure, return the actual diagnostics to the evaluator for correction against the same request; do not bypass validation, rewrite evidence to pass, or publish an unvalidated draft.
 6. Return the actual saved Markdown and HTML paths, not predicted filenames. Publication defaults to the request directory and uses collision-safe names. It never alters the request, response, original transcript, or earlier outputs. If HTML writing fails, report the preserved Markdown path and the nonzero failure rather than claiming both outputs exist. Shared HTML recipients need no keys; video playback needs internet and, where required, HTTP serving.
 
-Failed request or report writes remove the newly created incomplete file when filesystem cleanup succeeds. Existing files and successfully saved Markdown remain untouched.
+Failed request or report writes, including encoding failures, remove the newly created incomplete file when filesystem cleanup succeeds. If cleanup fails, the diagnostic reports both the original write error and the cleanup error. Existing files and successfully saved Markdown remain untouched.
 
 ## Fresh evaluator instructions
 
