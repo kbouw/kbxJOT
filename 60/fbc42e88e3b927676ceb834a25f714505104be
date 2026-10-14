@@ -1,0 +1,14 @@
+README.md
+  h_df085a9da41ca5 3,5,7,9-10,12,14,16,19-21,24,26,28,30-31,33,35,37,39,41,43,45-46,48,50,52
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "60fbc42e88e3b927676ceb834a25f714505104be",
+  "prompts": {},
+  "humans": {
+    "h_df085a9da41ca5": {
+      "author": "Kristian Bouw <kbouw@hey.com>"
+    }
+  }
+}
