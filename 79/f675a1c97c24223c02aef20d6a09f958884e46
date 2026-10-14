@@ -1,0 +1,38 @@
+.env.example
+  h_df085a9da41ca5 2-3
+README.md
+  h_df085a9da41ca5 3,5,10-11,13,17-24,31,33,35,37,39,41,43-45,47,51,53-55,57,61-63
+jot.py
+  h_df085a9da41ca5 4-6,214,216,220,242,258-259,261-263,268-275,360-361,363-364,366-373,376-378,380-381,383,387-389,393,408,417-419,423,425-427,464-473
+jot_agent.py
+  h_df085a9da41ca5 1,3-4,334-372
+jot_assets/agent-workflow.md
+  h_df085a9da41ca5 1,3,5,7-11,13,15,17,19,21
+jot_assets/evaluation-rubric.md
+  h_df085a9da41ca5 5,25
+jot_assets/evaluator-instructions.md
+  h_df085a9da41ca5 1-30
+jot_evaluator.py
+  h_df085a9da41ca5 1-146
+pyproject.toml
+  h_df085a9da41ca5 4,31,33,49,51
+tests/test_jot_agent.py
+  h_df085a9da41ca5 545,549-553,558-559,573-580,585-612,615,622-634,637
+tests/test_jot_cli.py
+  h_df085a9da41ca5 10,59-71,104,124-129,131-133,135-137,140-141,145,147,150-151,153-154,157-262,264-265,267-269,271,276-277,284-289,301-305,307-314,316,318,321-322,326,328,332,338,340,344-345
+tests/test_jot_evaluator.py
+  h_df085a9da41ca5 1-256
+tests/test_jot_html.py
+  h_df085a9da41ca5 319,322-323,341,343-344
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "79f675a1c97c24223c02aef20d6a09f958884e46",
+  "prompts": {},
+  "humans": {
+    "h_df085a9da41ca5": {
+      "author": "Kristian Bouw <kbouw@hey.com>"
+    }
+  }
+}
