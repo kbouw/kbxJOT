@@ -1,0 +1,16 @@
+jot_html.py
+  h_df085a9da41ca5 178-183,185-189,193-194,196-197,220-320,329
+tests/test_jot_html.py
+  h_df085a9da41ca5 10,98-101,111,123-309
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "0c22a9925d90e398af8d32731b983adf01651069",
+  "prompts": {},
+  "humans": {
+    "h_df085a9da41ca5": {
+      "author": "Kristian Bouw <kbouw@hey.com>"
+    }
+  }
+}
