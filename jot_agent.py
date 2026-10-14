@@ -88,7 +88,8 @@ def prepare_evaluation(source: Path, background: str | None = None, output_dir: 
     """
     source = Path(source).expanduser().resolve()
     document = source.read_bytes().decode("utf-8")
-    parse_transcript_document(document)
+    _, metadata, transcript = parse_transcript_document(document)
+    _segments(transcript, _duration(metadata["Duration"]))
     rubric, schema = _trusted_protocol()
     packet = {"version": 1, "source_document": document, "viewer_background": background,
               "rubric": rubric, "response_schema": schema}

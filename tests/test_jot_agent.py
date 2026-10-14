@@ -412,6 +412,60 @@ class AgentWorkflowTests(unittest.TestCase):
             jot_agent.prepare_evaluation(self.source, output_dir=self.output)
         self.assertFalse(self.output.exists())
 
+    def test_invalid_source_timestamps_preparation_preserves_inputs_and_creates_no_outputs(self):
+        original_request = self.request_path.read_bytes()
+        for body, duration, cause in (
+            ("[00:60] Malformed source.", 20, "invalid timestamp"),
+            ("[01:60:00] Malformed source.", 20, "invalid timestamp"),
+            ("[0:04] Malformed source.", 20, "invalid timestamp"),
+            ("[00:12] First.\n[00:04] Decreasing source.", 20, "timestamp decreases"),
+            ("[00:21] Beyond known duration.", 20, "exceeds known Duration"),
+            ("[00:01] Beyond measured zero.", 0, "exceeds known Duration"),
+        ):
+            with self.subTest(body=body, duration=duration):
+                document = jot._build_transcript_markdown(
+                    {**self.metadata, "duration": duration}, body, _URL, "Fixture transcription",
+                )
+                source_bytes = ("\ufeff" + document.replace("\n", "\r\n").replace(
+                    "source", "sourcé",
+                )).encode("utf-8")
+                self.source.write_bytes(source_bytes)
+                original_files = set(self.directory.iterdir())
+                with self.assertRaisesRegex(ValueError, cause):
+                    jot_agent.prepare_evaluation(self.source, output_dir=self.output)
+                self.assertFalse(self.output.exists())
+                self.assertEqual(set(self.directory.iterdir()), original_files)
+                self.assertEqual(self.source.read_bytes(), source_bytes)
+                self.assertEqual(self.request_path.read_bytes(), original_request)
+
+    def test_valid_source_invariants_survive_preparation_and_publication(self):
+        quote = "Cache invalidation needs explicit ownership."
+        for name, body, duration, timestamp, interval in (
+            ("long-hours", f"[100:00:00] {quote}", 360020, 360000, (360000, 360012)),
+            ("duplicate", f"[00:04] First same-second segment.\n[00:04] {quote}", 20, 4, (4, 12)),
+            ("unknown", _BODY, None, 4, (4, 80)),
+            ("measured-zero", f"[00:00] {quote}", 0, 0, None),
+            ("untimed", quote, 20, None, None),
+        ):
+            with self.subTest(name=name):
+                document = jot._build_transcript_markdown(
+                    {**self.metadata, "duration": duration}, body, _URL, "Fixture transcription",
+                )
+                source_bytes = document.encode("utf-8")
+                self.source.write_bytes(source_bytes)
+                self.request_path = jot_agent.prepare_evaluation(self.source)
+                self.packet = json.loads(self.request_path.read_text(encoding="utf-8"))
+                self.response = _response(self.packet["request_id"], timestamp=timestamp)
+                if interval is None:
+                    self.response["worth_watching"] = []
+                else:
+                    self.response["worth_watching"][0].update(start=interval[0], end=interval[1])
+                self.output = self.directory / name
+                markdown, _ = self.publish()
+                self.assertEqual(self.packet["source_document"], document)
+                self.assertIn(parse_transcript_document(document)[2], markdown.read_text(encoding="utf-8"))
+                self.assertEqual(self.source.read_bytes(), source_bytes)
+
 
 class AgentCLITests(unittest.TestCase):
     def setUp(self):
