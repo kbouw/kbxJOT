@@ -316,11 +316,11 @@ class EvaluationHTMLTests(unittest.TestCase):
     def test_channel_delimiters_round_trip_through_markdown_and_watch_page(self):
         for channel in ("Build | Research", r"Build\Learn | Research", r"Build\|Research"):
             with self.subTest(channel=channel):
-                document = _build_transcript_markdown(
+                document = add_evaluation(_build_transcript_markdown(
                     {"title": "Channel details", "channel": channel, "duration": None},
                     "[00:04] Original evidence.", f"https://youtu.be/{_VIDEO_ID}",
-                    "YouTube captions (manual)", "## Verdict\n\n**WATCH** — Evidence.",
-                )
+                    "YouTube captions (manual)",
+                ), "## Verdict\n\n**WATCH** — Evidence.")
                 markdown = _ParsedHTML(MarkdownIt("commonmark").enable("table").render(document))
                 channel_rows = [
                     [cell.text for cell in markdown.elements if cell.tag == "td" and cell.parent is row]
@@ -338,10 +338,10 @@ class EvaluationHTMLTests(unittest.TestCase):
             "## Worth watching\n\nEvidence at [04:32]."
         )
         transcript = "[04:32] Original <script>quoted text</script> & evidence."
-        document = _build_transcript_markdown(
+        document = add_evaluation(_build_transcript_markdown(
             {"title": "Producer title & detail", "channel": "Producer channel", "duration": None},
-            transcript, source, "YouTube captions (manual)", report,
-        )
+            transcript, source, "YouTube captions (manual)",
+        ), report)
         parsed = self.render(document)
         self.assertIn("Producer title & detail", parsed.visible_text)
         self.assertIn("Producer channel", parsed.visible_text)

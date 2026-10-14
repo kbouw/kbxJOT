@@ -2,15 +2,13 @@
 
 from contextlib import ExitStack, redirect_stderr, redirect_stdout
 from io import StringIO
-import json
 import os
 from pathlib import Path
 import tempfile
 from types import SimpleNamespace
 import unittest
-from unittest.mock import MagicMock, Mock, patch
+from unittest.mock import Mock, patch
 
-import httpx
 from requests import Response, Session
 from youtube_transcript_api import PoTokenRequired, Transcript, TranscriptList
 
@@ -58,6 +56,19 @@ class CLITests(unittest.TestCase):
                 self.assert_rejected(["--render-html", "missing.md", *action])
 
 
+    def test_removed_packet_actions_are_not_public_cli_options(self):
+        for arguments in (
+            ["--prepare-evaluation", "source.md"],
+            ["--publish-evaluation", "request.json"],
+            ["--report", "response.json"],
+        ):
+            with self.subTest(arguments=arguments):
+                self.assert_rejected(arguments)
+
+    def test_explicit_captions_only_rejects_audio_flags(self):
+        for flag in ("--diarize", "--skip-captions"):
+            self.assert_rejected(["https://youtu.be/WkBPX-oDMnA", "--captions-only", flag])
+
     def test_caption_format_keeps_every_timestamp_and_original_wording(self):
         self.assertEqual(jot._captions_to_markdown([
             {"start": 4.8, "text": "um,  original wording"},
@@ -68,7 +79,6 @@ class CLITests(unittest.TestCase):
 
 
 _WORKFLOW_METADATA = {"title": "Workflow Talk", "channel": "Test Channel", "duration": 78}
-_WORKFLOW_REPORT = "## Verdict\n\n**WATCH** — Concrete evidence at [00:04].\n\n## Limits\n\nFixture speech only."
 
 
 def _caption_tracks(*, generated=False, empty=False, blocked=False):
@@ -91,9 +101,8 @@ class WorkflowTests(unittest.TestCase):
     def setUp(self):
         self.stack = ExitStack()
         self.addCleanup(self.stack.close)
-        self.directory = Path(self.stack.enter_context(tempfile.TemporaryDirectory()))
+        self.directory = Path(self.stack.enter_context(tempfile.TemporaryDirectory())).resolve()
         self.stack.enter_context(patch.dict(os.environ, {
-            "OPENROUTER_API_KEY": "fixture-openrouter",
             "ASSEMBLYAI_API_KEY": "fixture-assembly",
         }, clear=True))
         self.metadata_adapter = jot._get_video_metadata
@@ -112,87 +121,174 @@ class WorkflowTests(unittest.TestCase):
                 "words": [{"text": "Recovered speech", "start": 1000, "end": 2000}],
             },
         ))
-        self.http = Mock(spec=httpx.Client)
-        self.http.post.return_value = httpx.Response(
-            200, json={"choices": [{
-                "finish_reason": "stop", "message": {"content": _WORKFLOW_REPORT},
-            }]}, request=httpx.Request("POST", "https://openrouter.ai/api/v1/chat/completions"),
+        self.preflight = self.stack.enter_context(patch(
+            "jot_evaluator.find_evaluator", return_value="/installed/claude",
+        ))
+        self.evaluation_paths = (
+            self.directory / "published.evaluation.md",
+            self.directory / "published.evaluation.html",
         )
-        client = self.stack.enter_context(patch("jot.httpx.Client", new_callable=MagicMock))
-        client.return_value.__enter__.return_value = self.http
+        self.evaluator = self.stack.enter_context(patch(
+            "jot_agent.evaluate_transcript", return_value=self.evaluation_paths,
+        ))
 
-    def download_fixture(self, url, folder):
-        path = Path(folder) / "audio.mp3"
-        path.write_bytes(b"local audio boundary fixture")
+    def download_fixture(self, url, directory):
+        path = Path(directory) / "audio.mp3"
+        path.write_bytes(b"local audio fixture")
         return str(path)
 
-    def run_command(self, *, evaluate=False, diarize=False, skip_captions=False, directory=None):
+    def run_command(self, *, evaluate=False, diarize=False, skip_captions=False,
+                    captions_only=False, directory=None, background=None):
         output, error = StringIO(), StringIO()
         with redirect_stdout(output), redirect_stderr(error):
             try:
-                jot.cmd_transcribe(
+                result = jot.cmd_transcribe(
                     "https://youtu.be/WkBPX-oDMnA", diarize, skip_captions,
-                    str(directory or self.directory), evaluate, None,
+                    str(directory or self.directory), evaluate, background, captions_only,
                 )
             except SystemExit as exc:
-                code = exc.code
-            else:
-                code = 0
-        return code, output.getvalue(), error.getvalue()
+                return exc.code, output.getvalue(), error.getvalue(), None
+        return 0, output.getvalue(), error.getvalue(), result
 
-    def test_manual_and_generated_provenance_reaches_saved_evidence(self):
-        for generated, expected in ((False, "manual"), (True, "auto-generated")):
+    def test_evaluation_delegates_saved_original_captions_and_returns_publication_paths(self):
+        for generated, method in ((False, "manual"), (True, "auto-generated")):
             with self.subTest(generated=generated):
                 self.tracks.return_value = _caption_tracks(generated=generated)
-                folder = self.directory / expected
-                code, _, _ = self.run_command(evaluate=True, directory=folder)
-                self.assertEqual(code, 0)
-                markdown = (folder / "Workflow Talk.evaluation.md").read_text()
-                html = (folder / "Workflow Talk.evaluation.html").read_text()
-                self.assertIn(f"YouTube captions ({expected})", markdown)
-                self.assertIn(f"YouTube captions ({expected})", html)
-                self.assertIn("[00:04] um, original evidence", markdown)
+                folder = self.directory / method
+                code, output, error, result = self.run_command(
+                    evaluate=True, directory=folder, background="My learning goals",
+                )
+                self.assertEqual(code, 0, error)
+                source = folder / "Workflow Talk.md"
+                document = source.read_text()
+                self.assertIn(f"YouTube captions ({method})", document)
+                self.assertIn("[00:04] um, original evidence", document)
+                self.assertNotIn("## Watch-value evaluation", document)
+                self.evaluator.assert_called_with(source, "My learning goals", folder)
+                self.assertEqual(result, self.evaluation_paths)
+                for path in self.evaluation_paths:
+                    self.assertIn(str(path), output)
+                self.download.assert_not_called()
+                self.audio.assert_not_called()
+                self.assertEqual(list(folder.iterdir()), [source])
 
-    def test_fetch_failure_retains_cause_and_recovers_audio(self):
+    def test_missing_evaluator_stops_before_network_or_capture(self):
+        self.preflight.side_effect = ValueError("Install Claude Code")
+        code, output, error, result = self.run_command(evaluate=True)
+        self.assertEqual(code, 1)
+        self.assertIn("Install Claude Code", error)
+        self.assertNotIn("Saved HTML", output)
+        self.metadata.assert_not_called()
+        self.tracks.assert_not_called()
+        self.download.assert_not_called()
+        self.evaluator.assert_not_called()
+        self.assertEqual(list(self.directory.iterdir()), [])
+
+    def test_evaluation_defaults_to_no_audio_for_missing_empty_or_failed_captions(self):
+        scenarios = (
+            {"segments": [], "method": "YouTube captions (manual)"},
+            PoTokenRequired("WkBPX-oDMnA"),
+            None,
+        )
+        for index, scenario in enumerate(scenarios):
+            with self.subTest(index=index), patch.object(jot, "_try_youtube_captions") as captions:
+                if isinstance(scenario, Exception):
+                    captions.side_effect = scenario
+                else:
+                    captions.return_value = scenario
+                code, output, error, result = self.run_command(evaluate=True)
+                self.assertEqual(code, 1)
+                self.download.assert_not_called()
+                self.audio.assert_not_called()
+                self.evaluator.assert_not_called()
+                self.assertEqual(list(self.directory.iterdir()), [])
+
+    def test_source_save_failure_never_starts_evaluation(self):
+        with patch.object(Path, "open", side_effect=PermissionError("capture write denied")):
+            code, output, error, result = self.run_command(evaluate=True)
+        self.assertEqual(code, 1)
+        self.assertIn("capture write denied", error)
+        self.evaluator.assert_not_called()
+        self.assertNotIn("Saved HTML", output)
+        self.assertEqual(list(self.directory.iterdir()), [])
+
+    def test_evaluation_failures_preserve_and_identify_source_without_success(self):
+        for failure in (ValueError("invalid report"), OSError("CLI invocation failed")):
+            with self.subTest(failure=failure):
+                self.evaluator.side_effect = failure
+                code, output, error, result = self.run_command(evaluate=True)
+                source = self.evaluator.call_args.args[0]
+                self.assertEqual(code, 1)
+                self.assertIn(str(source), error)
+                self.assertIn(str(failure), error)
+                self.assertIn("[00:04] um, original evidence", source.read_text())
+                self.assertNotIn("Saved evaluation:", output)
+                self.assertNotIn("Saved HTML:", output)
+                self.assertIsNone(result)
+        self.assertEqual(len(list(self.directory.glob("*.md"))), 2)
+        self.assertEqual(list(self.directory.glob("*.html")), [])
+
+    def test_source_collision_preserves_previous_capture_and_passes_actual_new_path(self):
+        existing = self.directory / "Workflow Talk.md"
+        existing.write_text("Previous capture")
+        code, output, error, result = self.run_command(evaluate=True)
+        self.assertEqual(code, 0, error)
+        source = self.directory / "Workflow Talk (1).md"
+        self.assertEqual(existing.read_text(), "Previous capture")
+        self.assertIn("[00:04]", source.read_text())
+
+    def test_plain_capture_returns_source_without_evaluator(self):
+        code, output, error, result = self.run_command(captions_only=True)
+        self.assertEqual(code, 0, error)
+        self.assertEqual(result, self.directory / "Workflow Talk.md")
+        self.assertIn("[00:04] um, original evidence", result.read_text())
+        self.preflight.assert_not_called()
+        self.evaluator.assert_not_called()
+
+    def test_explicit_audio_evaluation_uses_requested_transcription(self):
+        for diarize, skip in ((True, False), (False, True)):
+            with self.subTest(diarize=diarize, skip=skip):
+                folder = self.directory / f"{diarize}-{skip}"
+                code, output, error, result = self.run_command(
+                    evaluate=True, diarize=diarize, skip_captions=skip, directory=folder,
+                )
+                self.assertEqual(code, 0, error)
+                source = self.evaluator.call_args.args[0]
+                self.assertIn("[00:01] Recovered speech", source.read_text())
+                self.assertEqual(self.audio.call_args.kwargs, {"diarize": diarize})
+                self.assertEqual(Path(self.audio.call_args.args[0]).name, "audio.mp3")
+                self.tracks.assert_not_called()
+
+    def test_caption_access_error_retains_plain_capture_audio_fallback(self):
         self.tracks.return_value = _caption_tracks(blocked=True)
-        code, _, error = self.run_command()
-        self.assertEqual(code, 0)
+        code, output, error, result = self.run_command()
+        self.assertEqual(code, 0, error)
         self.assertIn(str(PoTokenRequired("WkBPX-oDMnA")), error)
-        markdown = (self.directory / "Workflow Talk.md").read_text()
-        self.assertIn("[00:01] Recovered speech", markdown)
-        self.assertIn("| **Method** | AssemblyAI |", markdown)
+        self.assertIn("[00:01] Recovered speech", result.read_text())
+        self.assertIn("| **Method** | AssemblyAI |", result.read_text())
+        self.evaluator.assert_not_called()
 
-    def test_incomplete_provider_metadata_still_publishes_evidence(self):
+    def test_incomplete_provider_metadata_retains_source_defaults(self):
         self.metadata.side_effect = self.metadata_adapter
         scenarios = (
             ({}, "Untitled", "Unknown"),
             ({"title": None, "channel": None}, "Untitled", "Unknown"),
-            ({"title": "", "channel": ""}, "Untitled", "Unknown"),
-            ({"title": "Named Talk", "channel": None, "uploader": "Known Uploader"},
-             "Named Talk", "Known Uploader"),
+            ({"title": "", "channel": "", "uploader": ""}, "Untitled", "Unknown"),
+            ({"title": "Uploader Talk", "channel": "", "uploader": "Uploader"}, "Uploader Talk", "Uploader"),
         )
         with patch("yt_dlp.YoutubeDL") as downloader:
             provider = downloader.return_value.__enter__.return_value
             for index, (metadata, title, channel) in enumerate(scenarios):
                 with self.subTest(metadata=metadata):
                     provider.extract_info.return_value = metadata
-                    folder = self.directory / str(index)
-                    code, _, _ = self.run_command(evaluate=True, directory=folder)
-                    self.assertEqual(code, 0)
-                    markdown = (folder / f"{title}.evaluation.md").read_text()
-                    html = (folder / f"{title}.evaluation.html").read_text()
-                    self.assertIn(f"# {title}\n", markdown)
-                    self.assertIn(f"| **Channel** | {channel} |", markdown)
-                    self.assertIn(f"<dd>{channel}</dd>", html)
-                    payload = self.http.post.call_args.kwargs["json"]
-                    sent = json.loads(payload["messages"][1]["content"])["metadata"]
-                    self.assertEqual(sent["title"], title)
-                    self.assertEqual(sent["channel"], channel)
+                    code, output, error, source = self.run_command(directory=self.directory / str(index))
+                    self.assertEqual(code, 0, error)
+                    self.assertIn(f"# {title}\n", source.read_text())
+                    self.assertIn(f"| **Channel** | {channel} |", source.read_text())
 
-    def test_unknown_duration_is_not_zero_in_saved_page_or_model_input(self):
+    def test_missing_null_and_failed_metadata_keep_unknown_duration(self):
         for scenario in ("missing", "null", "failure"):
             with self.subTest(scenario=scenario):
-                folder = self.directory / scenario
                 self.metadata.side_effect = None
                 metadata = dict(_WORKFLOW_METADATA)
                 if scenario == "missing":
@@ -202,82 +298,51 @@ class WorkflowTests(unittest.TestCase):
                 else:
                     self.metadata.side_effect = OSError("metadata unavailable")
                 self.metadata.return_value = metadata
-                code, _, _ = self.run_command(evaluate=True, directory=folder)
-                self.assertEqual(code, 0)
-                markdown_files = list(folder.glob("*.evaluation.md"))
-                self.assertEqual(len(markdown_files), 1)
-                self.assertIn("| **Duration** | Unknown |", markdown_files[0].read_text())
-                self.assertIn("<dd>Unknown</dd>", markdown_files[0].with_suffix(".html").read_text())
-                payload = self.http.post.call_args.kwargs["json"]
-                self.assertIsNone(json.loads(payload["messages"][1]["content"])["metadata"].get("duration"))
+                code, output, error, source = self.run_command(directory=self.directory / scenario)
+                self.assertEqual(code, 0, error)
+                self.assertIn("| **Duration** | Unknown |", source.read_text())
 
-    def test_measured_zero_duration_remains_zero(self):
+    def test_actual_zero_duration_remains_zero(self):
         self.metadata.return_value = {**_WORKFLOW_METADATA, "duration": 0}
-        code, _, _ = self.run_command()
-        self.assertEqual(code, 0)
-        self.assertIn("| **Duration** | 00:00 |", (self.directory / "Workflow Talk.md").read_text())
+        code, output, error, source = self.run_command()
+        self.assertEqual(code, 0, error)
+        self.assertIn("| **Duration** | 00:00 |", source.read_text())
 
-    def test_empty_captions_recover_audio_before_evaluation(self):
-        self.tracks.return_value = _caption_tracks(empty=True)
-        code, _, _ = self.run_command(evaluate=True)
-        self.assertEqual(code, 0)
-        document = (self.directory / "Workflow Talk.evaluation.md").read_text()
-        self.assertIn("[00:01] Recovered speech", document)
-        self.assertIn("| **Method** | AssemblyAI |", document)
-        payload = self.http.post.call_args.kwargs["json"]
-        self.assertEqual(json.loads(payload["messages"][1]["content"])["transcript"],
-                         "[00:01] Recovered speech")
-
-    def test_empty_audio_never_publishes_or_requests_evaluation(self):
-        cases = (
-            {"text": "", "words": []},
-            {"text": None, "words": []},
+    def test_empty_audio_results_do_not_publish_or_evaluate(self):
+        results = (
+            {"text": ""},
+            {"text": "   "},
             {"text": " ", "words": [{"text": " ", "start": 0, "end": 100}]},
-            {"text": "", "utterances": [{"text": " ", "speaker": "A", "start": 0, "end": 100}]},
+            {"text": "", "utterances": [{"speaker": "A", "text": " ", "start": 0, "end": 100}]},
         )
-        for index, result in enumerate(cases):
+        for result in results:
             with self.subTest(result=result):
                 self.audio.return_value = result
-                code, _, _ = self.run_command(
-                    evaluate=True, diarize=True, directory=self.directory / str(index),
+                code, output, error, saved = self.run_command(
+                    evaluate=True, skip_captions=True, diarize="utterances" in result,
                 )
                 self.assertEqual(code, 1)
                 self.assertEqual(list(self.directory.iterdir()), [])
-                self.http.post.assert_not_called()
+                self.evaluator.assert_not_called()
 
-    def test_missing_audio_key_stops_before_downloading(self):
+    def test_missing_audio_key_stops_before_download(self):
         del os.environ["ASSEMBLYAI_API_KEY"]
         for diarize, skip in ((True, False), (False, True)):
             with self.subTest(diarize=diarize, skip=skip):
-                code, _, error = self.run_command(diarize=diarize, skip_captions=skip)
+                code, output, error, result = self.run_command(diarize=diarize, skip_captions=skip)
                 self.assertEqual(code, 1)
                 self.assertIn("ASSEMBLYAI_API_KEY", error)
                 self.download.assert_not_called()
                 self.assertEqual(list(self.directory.iterdir()), [])
 
-    def test_audio_failure_has_a_cause_without_publishing_or_evaluating(self):
+    def test_audio_failure_identifies_cause_without_publication_or_evaluation(self):
         self.audio.side_effect = OSError("fixture transport failure")
-        code, _, error = self.run_command(evaluate=True, skip_captions=True)
+        code, output, error, result = self.run_command(evaluate=True, skip_captions=True)
         self.assertEqual(code, 1)
         self.assertIn("fixture transport failure", error)
         self.assertEqual(list(self.directory.iterdir()), [])
-        self.http.post.assert_not_called()
+        self.evaluator.assert_not_called()
 
-    def test_html_write_failure_preserves_and_identifies_markdown(self):
-        real_write = Path.write_text
-        def fail_html(path, *args, **kwargs):
-            if path.suffix == ".html":
-                raise PermissionError("fixture HTML write denial")
-            return real_write(path, *args, **kwargs)
-        with patch.object(Path, "write_text", fail_html):
-            code, _, error = self.run_command(evaluate=True)
-        markdown = self.directory / "Workflow Talk.evaluation.md"
-        self.assertEqual(code, 1)
-        self.assertIn(str(markdown), error)
-        self.assertIn("fixture HTML write denial", error)
-        self.assertIn(_WORKFLOW_REPORT, markdown.read_text())
-        self.assertIn("[00:04] um, original evidence", markdown.read_text())
-        self.assertFalse(markdown.with_suffix(".html").exists())
 
 
 class AudioContractTests(unittest.TestCase):

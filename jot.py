@@ -1,13 +1,12 @@
 #!/usr/bin/env python3
 """Capture YouTube speech and publish optional watch-value evaluations.
 
-Captions retain their original wording and timestamps. AssemblyAI supplies audio
-transcription when permitted; host-run independent evaluation is fully offline.
-Saved evaluation Markdown can be rendered to self-contained HTML offline.
+Captions retain original wording and timestamps. AssemblyAI supplies audio
+transcription when permitted; fresh Claude Code evaluation is validated before
+saved Markdown and self-contained HTML are published.
 """
 
 import argparse
-import json
 import os
 import re
 import shutil
@@ -15,7 +14,6 @@ import sys
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
-import httpx
 from dotenv import load_dotenv
 
 from jot_html import _youtube_id
@@ -213,13 +211,13 @@ def _assemblyai_to_markdown(result: dict, diarize: bool = True) -> str:
 
 
 def _build_transcript_markdown(
-    metadata: dict, transcript_body: str, url: str, method: str, report: str | None = None,
+    metadata: dict, transcript_body: str, url: str, method: str,
 ) -> str:
-    """Serialize source speech and an optional actual evaluation into saved Markdown.
+    """Serialize captured source speech into saved Markdown.
 
     The envelope contract is documented at jot_html._parse_document. Metadata
     contains title/channel and optional duration (seconds or None)/upload_date.
-    The report and timestamped transcript are preserved, not reformatted here.
+    Timestamped speech is preserved, not reformatted here.
     """
     title = metadata["title"]
     channel = metadata["channel"].replace("\\", r"\\").replace("|", r"\|")
@@ -228,7 +226,6 @@ def _build_transcript_markdown(
     if upload_date:
         upload_date = f"{upload_date[:4]}-{upload_date[4:6]}-{upload_date[6:]}"
     now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-    evaluation = f"## Watch-value evaluation\n\n{report}\n\n---\n\n" if report is not None else ""
     return f"""# {title}
 
 | | |
@@ -242,53 +239,13 @@ def _build_transcript_markdown(
 
 ---
 
-{evaluation}## Transcript
+## Transcript
 
 {transcript_body}
 """
 
 
 
-def _evaluate_watch_value(metadata: dict, transcript: str, url: str, background: str | None) -> str:
-    """Assess full timestamped speech; fail rather than publish a partial report."""
-    if not transcript.strip():
-        raise ValueError("No transcript content available to evaluate.")
-    payload = {
-        "model": os.environ.get("OPENROUTER_MODEL") or "anthropic/claude-sonnet-4.5",
-        "max_tokens": 8000,
-        "messages": [
-            {"role": "system", "content": read_asset("evaluation-rubric.md")},
-            {"role": "user", "content": json.dumps({
-                "metadata": metadata,
-                "source": url,
-                "viewer_background": background,
-                "transcript": transcript,
-            }, ensure_ascii=False)},
-        ],
-    }
-    with httpx.Client(timeout=180.0) as client:
-        response = client.post(
-            "https://openrouter.ai/api/v1/chat/completions",
-            headers={"Authorization": f"Bearer {os.environ['OPENROUTER_API_KEY']}"},
-            json=payload,
-        )
-        response.raise_for_status()
-        result = response.json()
-    if result.get("error"):
-        raise ValueError(f"OpenRouter evaluation failed: {result['error']}")
-    choices = result.get("choices")
-    if not choices:
-        raise ValueError("OpenRouter returned no evaluation.")
-    choice = choices[0]
-    if choice.get("finish_reason") != "stop":
-        raise ValueError(f"Evaluation incomplete ({choice.get('finish_reason')}); no report saved.")
-    report = choice.get("message", {}).get("content")
-    if not isinstance(report, str):
-        raise ValueError("OpenRouter returned no text report.")
-    report = report.strip()
-    if not report:
-        raise ValueError("Evaluation returned no report.")
-    return report
 
 
 # ---------------------------------------------------------------------------
@@ -298,20 +255,24 @@ def _evaluate_watch_value(metadata: dict, transcript: str, url: str, background:
 def cmd_transcribe(
     url: str, diarize: bool, skip_captions: bool, output_dir: str,
     evaluate: bool, background: str | None, captions_only: bool = False,
-) -> None:
-    """Publish a transcript or evaluation; report operational failures and exit 1.
+) -> Path | tuple[Path, Path]:
+    """Save source speech, then optionally evaluate it with fresh Claude Code.
 
-    By default empty/failed captions can use the configured audio fallback.
-    captions_only forbids that fallback even when provider keys are configured.
-    If HTML publication fails after Markdown succeeds, preserve and name that
-    Markdown file rather than discarding the recovered source/evaluation.
+    Evaluation defaults to captions only unless audio is explicitly requested.
+    Plain capture retains audio fallback. Evaluation failure preserves and names
+    the captured transcript; publication belongs to jot_agent.
     """
     if captions_only and (diarize or skip_captions):
         print("Error: --captions-only cannot be combined with --diarize or --skip-captions.", file=sys.stderr)
         sys.exit(1)
-    if evaluate and not os.environ.get("OPENROUTER_API_KEY"):
-        print("Error: OPENROUTER_API_KEY is required for --evaluate.", file=sys.stderr)
-        sys.exit(1)
+    if evaluate:
+        from jot_evaluator import find_evaluator
+        try:
+            find_evaluator()
+        except (OSError, ValueError) as e:
+            print(f"Error: Cannot start evaluation: {e}", file=sys.stderr)
+            sys.exit(1)
+        captions_only = captions_only or not (diarize or skip_captions)
     video_id = _youtube_id(url)
     if not video_id:
         print(f"{C.RED}Error: Could not parse video ID from URL: {url}{C.RESET}", file=sys.stderr)
@@ -387,16 +348,6 @@ def cmd_transcribe(
         print("Error: No transcript speech was produced; no files saved.", file=sys.stderr)
         sys.exit(1)
 
-    report = None
-    if evaluate:
-        print(f"{C.DIM}Evaluating learning value...{C.RESET}")
-        try:
-            report = _evaluate_watch_value(
-                metadata, transcript_body, f"https://www.youtube.com/watch?v={video_id}", background,
-            )
-        except Exception as e:
-            print(f"Error: Evaluation failed: {e}", file=sys.stderr)
-            sys.exit(1)
 
     # Write output
     out_dir = Path(output_dir).expanduser().resolve()
@@ -406,45 +357,40 @@ def cmd_transcribe(
         print(f"Error: Cannot create output directory {out_dir}: {e}", file=sys.stderr)
         sys.exit(1)
 
-    suffix = ".evaluation.md" if evaluate else ".md"
-    filename = _sanitize_filename(metadata["title"]) + suffix
-    output_path = out_dir / filename
-
+    stem = _sanitize_filename(metadata["title"])
+    output_path = out_dir / f"{stem}.md"
     counter = 1
-    while output_path.exists() or (evaluate and output_path.with_suffix(".html").exists()):
-        output_path = out_dir / f"{_sanitize_filename(metadata['title'])} ({counter}){suffix}"
-        counter += 1
-
-    doc = _build_transcript_markdown(metadata, transcript_body, url, method, report)
-    if report is not None:
-        print(f"\n{report}")
-        from jot_html import build_evaluation_html
+    doc = _build_transcript_markdown(metadata, transcript_body, url, method)
+    while True:
         try:
-            html_doc = build_evaluation_html(doc)
-        except (OSError, ValueError) as e:
-            print(f"Error: Cannot render evaluation: {e}; no files saved.", file=sys.stderr)
-            sys.exit(1)
-    try:
-        output_path.write_text(doc, encoding="utf-8")
-    except OSError as e:
-        print(f"Error: Cannot save Markdown {output_path}: {e}", file=sys.stderr)
-        sys.exit(1)
-    print(f"\n{C.GREEN}Saved:{C.RESET} {output_path}")
-    if report is not None:
-        html_path = output_path.with_suffix(".html")
-        try:
-            html_path.write_text(html_doc, encoding="utf-8")
+            with output_path.open("x", encoding="utf-8") as source:
+                source.write(doc)
+            break
+        except FileExistsError:
+            output_path = out_dir / f"{stem} ({counter}).md"
+            counter += 1
         except OSError as e:
+            print(f"Error: Cannot save transcript {output_path}: {e}", file=sys.stderr)
+            sys.exit(1)
+    print(f"\n{C.GREEN}Saved:{C.RESET} {output_path}")
+    if evaluate:
+        from jot_agent import evaluate_transcript
+        print(f"{C.DIM}Evaluating learning value with Claude Code...{C.RESET}")
+        try:
+            markdown_path, html_path = evaluate_transcript(output_path, background, out_dir)
+        except (OSError, ValueError) as e:
             print(
-                f"Error: Cannot save HTML companion {html_path}: {e}\n"
-                f"Markdown preserved at: {output_path}",
+                f"Error: Evaluation failed: {e}\nTranscript preserved at: {output_path}",
                 file=sys.stderr,
             )
             sys.exit(1)
-        print(f"\n{C.GREEN}Saved HTML:{C.RESET} {html_path}")
+        print(f"\n{C.GREEN}Saved evaluation:{C.RESET} {markdown_path}")
+        print(f"{C.GREEN}Saved HTML:{C.RESET} {html_path}")
+        return markdown_path, html_path
 
     size_kb = output_path.stat().st_size / 1024
     print(f"{C.DIM}{size_kb:.1f} KB{C.RESET}")
+    return output_path
 
 # ---------------------------------------------------------------------------
 # CLI entry point
@@ -458,10 +404,8 @@ def main() -> None:
         epilog=(
             "Examples:\n"
             "  jot https://youtu.be/WkBPX-oDMnA --captions-only\n"
-            "  jot --prepare-evaluation transcripts/talk.md --background 'My learning goals'\n"
-            "  jot --publish-evaluation transcripts/talk.request.json --report response.json\n"
             "  jot --agent-instructions\n"
-            "  jot https://youtu.be/WkBPX-oDMnA --evaluate\n"
+            "  jot https://youtu.be/WkBPX-oDMnA --captions-only --evaluate\n"
             "  jot --render-html transcripts/talk.evaluation.md\n"
         ),
     )
@@ -470,25 +414,17 @@ def main() -> None:
     parser.add_argument("--diarize", action="store_true", help="Use AssemblyAI speaker diarization")
     parser.add_argument("--skip-captions", action="store_true", help="Use AssemblyAI instead of YouTube captions")
     parser.add_argument("--captions-only", action="store_true", help="Require captions; never download audio or fall back to AssemblyAI")
-    parser.add_argument("--evaluate", action="store_true", help="Assess learning value, novelty, and fluff via OpenRouter")
-    parser.add_argument("--background", help="What you already know or want to learn (with --evaluate or --prepare-evaluation)")
-    parser.add_argument("--agent-instructions", action="store_true", help="Print provider-neutral host/evaluator instructions; does not launch agents")
-    parser.add_argument("--prepare-evaluation", type=Path, metavar="TRANSCRIPT.md", help="Prepare a complete evaluator request offline")
-    parser.add_argument("--publish-evaluation", type=Path, metavar="REQUEST.json", help="Validate and publish an external evaluator response offline")
-    parser.add_argument("--report", type=Path, metavar="RESPONSE.json", help="External evaluator JSON (requires --publish-evaluation)")
+    parser.add_argument("--evaluate", action="store_true", help="Evaluate with fresh Claude Code; captions only unless --skip-captions or --diarize")
+    parser.add_argument("--background", help="What you already know or want to learn (with --evaluate)")
+    parser.add_argument("--agent-instructions", action="store_true", help="Print host usage instructions; does not launch evaluation")
     parser.add_argument("--render-html", type=Path, metavar="FILE",
                         help="Render saved evaluation Markdown to portable HTML without API calls")
     args = parser.parse_args()
-    actions = (args.url is not None, args.agent_instructions, args.prepare_evaluation is not None,
-               args.publish_evaluation is not None, args.render_html is not None)
+    actions = (args.url is not None, args.agent_instructions, args.render_html is not None)
     if sum(actions) > 1:
-        parser.error("Choose only one action: URL, --agent-instructions, --prepare-evaluation, --publish-evaluation, or --render-html")
-    if args.report is not None and args.publish_evaluation is None:
-        parser.error("--report requires --publish-evaluation")
-    if args.publish_evaluation is not None and args.report is None:
-        parser.error("--publish-evaluation requires --report RESPONSE.json")
-    if args.background is not None and not (args.evaluate or args.prepare_evaluation is not None):
-        parser.error("--background requires --evaluate or --prepare-evaluation")
+        parser.error("Choose only one action: URL, --agent-instructions, or --render-html")
+    if args.background is not None and not args.evaluate:
+        parser.error("--background requires --evaluate")
     transcription_flags = any((args.evaluate, args.diarize, args.skip_captions, args.captions_only))
     if any(actions[1:]) and transcription_flags:
         parser.error("Offline actions cannot be combined with transcription or --evaluate flags")
@@ -503,23 +439,6 @@ def main() -> None:
             print(read_asset("agent-workflow.md"), end="")
         except OSError as e:
             parser.error(f"Cannot read agent instructions: {e}")
-        return
-    if args.prepare_evaluation is not None:
-        from jot_agent import prepare_evaluation
-        try:
-            request_path = prepare_evaluation(args.prepare_evaluation, args.background, args.output)
-        except (OSError, ValueError) as e:
-            parser.error(f"Cannot prepare evaluation: {e}")
-        print(f"Saved request: {request_path}")
-        return
-    if args.publish_evaluation is not None:
-        from jot_agent import publish_evaluation
-        try:
-            markdown_path, html_path = publish_evaluation(args.publish_evaluation, args.report, args.output)
-        except (OSError, ValueError) as e:
-            parser.error(f"Cannot publish evaluation: {e}")
-        print(f"Saved: {markdown_path}")
-        print(f"Saved HTML: {html_path}")
         return
     if args.render_html is not None:
         from jot_html import build_evaluation_html
@@ -542,14 +461,16 @@ def main() -> None:
     if _youtube_id(args.url) is None:
         parser.error("Expected a valid YouTube video URL")
 
-    # Load the first existing .env candidate, preserving the established priority.
-    for candidate in _ENV_CANDIDATES:
-        if not candidate:
-            continue
-        path = Path(candidate).expanduser()
-        if path.exists():
-            load_dotenv(path, override=True)
-            break
+    # Captions and Claude Code use no provider .env; only audio needs it.
+    audio_permitted = args.diarize or args.skip_captions or not (args.captions_only or args.evaluate)
+    if audio_permitted:
+        for candidate in _ENV_CANDIDATES:
+            if not candidate:
+                continue
+            path = Path(candidate).expanduser()
+            if path.exists():
+                load_dotenv(path, override=True)
+                break
     cmd_transcribe(
         url=args.url,
         evaluate=args.evaluate,
