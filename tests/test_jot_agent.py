@@ -242,6 +242,32 @@ class AgentWorkflowTests(unittest.TestCase):
                 self.response["takeaways"][0]["evidence"] = [citation]
                 self.rejected("exact source span|null citation")
 
+    def test_takeaway_has_one_explicit_start_and_other_sections_have_no_evidence_rows(self):
+        self.change_source("[01:58] First supporting source.\n[02:07] Second supporting source.", duration=150)
+        self.response = _response(self.packet["request_id"], timestamp=118, quote="First supporting source.")
+        self.response["takeaways"][0]["evidence"].insert(
+            0, {"timestamp": 127, "quote": "Second supporting source."},
+        )
+        self.response["worth_watching"][0].update(start=118, end=140)
+        self.response["signal"]["substance"] = {
+            "rating": "high", "reason": "A concrete example.",
+            "evidence": [{"timestamp": 127, "quote": "Second supporting source."}],
+        }
+        markdown, _ = self.publish()
+        report = markdown.read_text().split("## Watch-value evaluation\n\n", 1)[1].split("\n---\n", 1)[0]
+        takeaways = report.split("## What you can learn\n", 1)[1].split("\n## Novelty", 1)[0]
+        signal = report.split("## Signal versus fluff\n", 1)[1].split("\n## Worth watching", 1)[0]
+        watching = report.split("## Worth watching\n", 1)[1].split("\n## Limits", 1)[0]
+        self.assertIn(f"[Start: 01:58]({_URL}&t=118)", takeaways)
+        self.assertEqual(takeaways.count("]("), 1)
+        self.assertNotIn("02:07", takeaways)
+        self.assertNotIn("First supporting source.", takeaways)
+        self.assertNotIn("Second supporting source.", takeaways)
+        self.assertNotIn("](", signal)
+        self.assertIn(f"[01:58–02:20]({_URL}&t=118)", watching)
+        self.assertEqual(watching.count("]("), 1)
+        self.assertNotIn("\n> ", report)
+
     def test_equal_adjacent_timestamps_keep_both_segments_groundable(self):
         self.change_source("[00:04] First same-second segment.\n[00:04] Second same-second segment.")
         self.response["takeaways"][0]["evidence"] = [
@@ -291,8 +317,6 @@ class AgentWorkflowTests(unittest.TestCase):
         self.change_source("Cache invalidation needs explicit ownership.", duration=None)
         self.response = _response(self.packet["request_id"], timestamp=None)
         markdown, html = self.publish()
-        self.assertIn("Untimed source", markdown.read_text())
-        self.assertIn("no supported ranges", markdown.read_text())
         self.assertNotIn("&t=", html.read_text())
 
     def test_untimed_source_rejects_invented_citation_or_range(self):

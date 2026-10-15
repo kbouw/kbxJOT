@@ -70,6 +70,8 @@ Evaluation alone can take up to 10 minutes, in addition to caption capture. Allo
 
 Open the delivered `.evaluation.html` file in a modern browser. Share the HTML file alone: no companion assets, keys, or server are needed for reading. A remote assistant must provide a downloadable file, not a path on its own machine.
 
+Takeaways have one **Start** link; watch/skip ranges stay inline. Signal-versus-fluff ratings have no timestamp links or quote rows. Full evidence remains in the saved response JSON and source transcript.
+
 - **English captions unavailable?** The default evaluation workflow stops, even when captions exist in another language. It never silently downloads audio or uses paid transcription.
 - **Evaluator or validation failure?** jot stops without publishing a report. The saved transcript remains available. There is no fallback to host-assistant self-evaluation or automatic retry.
 - **Timeout, interruption, or excessive evaluator output?** jot stops the evaluator process tree without publishing a report. Evaluation has a 10-minute deadline and an 8 MiB limit on each output stream.
@@ -83,7 +85,13 @@ Local validation checks the full response schema, exact source quotes, timestamp
 
 Run `uv run jot --help` for transcript-only capture, explicit audio options, and rendering saved reports. Paid audio transcription requires separate setup and permission; it is not part of default evaluation. Coordinator usage is available through `uv run jot --agent-instructions`.
 
-**Workflow change:** `--evaluate` uses your selected evaluator and the evidence-validation gate, not OpenRouter. jot owns evaluation and publication.
+Refresh an existing report's layout without another evaluation:
+
+```bash
+uv run jot --render-html 'transcripts/talk.evaluation.md'
+```
+
+This updates the HTML, leaving the saved Markdown and response JSON unchanged.
 
 ## Licenses
 

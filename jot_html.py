@@ -414,6 +414,63 @@ def _split_takeaway(children: list[Token]) -> None:
     children[0].attrSet("class", "takeaway")
 
 
+def _compact_evidence(section: list[Token], video_id: str) -> None:
+    """Keep saved reports readable without discarding their source transcript.
+
+    Recognize jot's timestamp-and-quote blockquotes, not arbitrary quotations.
+    Takeaways retain one explicit start anchor; ranges already live in prose.
+    """
+    label = _section_label(section)
+    if label not in {"what you can learn", "worth watching", "signal versus fluff"}:
+        return
+    compact = []
+    previous = None
+    citations = {}
+    index = 0
+    while index < len(section):
+        token = section[index]
+        if token.type == "blockquote_open" and token.level == 0:
+            end = next(i for i in range(index + 1, len(section))
+                       if section[i].type == "blockquote_close" and section[i].level == 0)
+            paragraphs = [item for item in section[index + 1:end] if item.type == "inline"]
+            starts = []
+            recognized = bool(paragraphs)
+            for paragraph in paragraphs:
+                children = paragraph.children or []
+                if _inline_text(children).startswith("Untimed source — "):
+                    continue
+                if not children or children[0].type != "link_open":
+                    recognized = False
+                    break
+                close = next((i for i, item in enumerate(children) if item.type == "link_close"), None)
+                if (close is None or _youtube_id(children[0].attrGet("href") or "") != video_id
+                        or not re.fullmatch(_TIME_POINT, _inline_text(children[1:close]))
+                        or not _inline_text(children[close + 1:]).startswith(" — ")):
+                    recognized = False
+                    break
+                clock = _inline_text(children[1:close])
+                starts.append((_seconds(clock), clock))
+            if recognized:
+                if label == "what you can learn" and previous is not None and starts:
+                    start, clock = min(starts)
+                    saved = citations.get(id(previous))
+                    if saved is None or start < saved[1]:
+                        citations[id(previous)] = (previous, start, clock)
+                index = end + 1
+                continue
+        compact.append(token)
+        if token.type == "inline" and token.level == 3:
+            previous = token
+        index += 1
+    for paragraph, start, clock in citations.values():
+        opening = Token("link_open", "a", 1)
+        _seek_link(opening, video_id, start)
+        paragraph.children.extend((
+            _text_token(" · "), opening, _text_token(f"Start: {clock}"), Token("link_close", "a", -1),
+        ))
+    section[:] = compact
+
+
 def _render_section(markdown: MarkdownIt, section: list[Token]) -> str:
     def render(tokens: list[Token]) -> str:
         return markdown.renderer.render(tokens, markdown.options, {})
@@ -528,7 +585,7 @@ _JS = """
 
 
 def build_evaluation_html(document: str) -> str:
-    """Return one shareable HTML page containing the complete saved evaluation.
+    """Return a portable reader view of a saved evaluation, with compact source navigation.
 
     Requires jot_assets beside this module only while rendering; the returned page
     embeds Libron v0.31 and its license. Rendering never accesses the network.
@@ -563,6 +620,7 @@ def build_evaluation_html(document: str) -> str:
     preamble, sections = _split_sections(tokens)
     sections.sort(key=_section_rank)
     for section in sections:
+        _compact_evidence(section, video_id)
         if _section_label(section) == "what you can learn":
             for token in section:
                 if token.type == "inline" and token.children:
@@ -570,7 +628,22 @@ def build_evaluation_html(document: str) -> str:
         elif _section_label(section) == "signal versus fluff":
             for token in section:
                 children = token.children
-                if token.type != "inline" or not children or children[0].type != "strong_open":
+                if token.type != "inline" or not children:
+                    continue
+                # Signal ratings are assessments, not video navigation.
+                plain = []
+                seeking = False
+                for child in children:
+                    if child.type == "link_open":
+                        seeking = child.attrGet("data-start") is not None
+                        if seeking:
+                            continue
+                    elif child.type == "link_close" and seeking:
+                        seeking = False
+                        continue
+                    plain.append(child)
+                token.children = children = plain
+                if children[0].type != "strong_open":
                     continue
                 end = next((i for i, child in enumerate(children) if child.type == "span_close"), None)
                 if end is None:
@@ -652,7 +725,7 @@ def build_evaluation_html(document: str) -> str:
 </section>
 </article>
 </div>
-<footer class="footer"><p>jot · A portable reading copy. Evaluation wording is preserved from the saved report.</p>
+<footer class="footer"><p>jot · A portable reading copy. Source transcript included for checking the assessment.</p>
 <details class="licenses"><summary>Libron v0.31 &amp; Flexoki · licenses</summary><pre>{escape(license_text)}</pre></details></footer>
 </main>
 <script>{_JS}</script>

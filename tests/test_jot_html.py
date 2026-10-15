@@ -371,6 +371,7 @@ class EvaluationHTMLTests(unittest.TestCase):
             if anchor.text.strip().strip("[]") == label
         ]
 
+
     def test_valid_video_ids_are_embedded_without_network(self):
         cases = (
             ("kSzbuPFjdQo", "https://www.youtube.com/watch?v=kSzbuPFjdQo"),
@@ -580,22 +581,48 @@ class EvaluationHTMLTests(unittest.TestCase):
                 self.assertEqual(len(limits), 1)
                 self.assertNotIn("open", limits[0].attrs)
 
-    def test_signal_explanations_preserve_internal_hyphens_and_colons(self):
-        explanation = "Evidence-based explanation: follow-up details at [04:32]."
-        for separator in (" ", " — ", " – ", ": "):
-            with self.subTest(separator=separator):
-                parsed = self.render(_saved_evaluation(
-                    report=(
-                        "## Verdict\n\n**WATCH** — Useful evidence.\n\n"
-                        "## Signal versus fluff\n\n"
-                        f"**Substantive explanation: HIGH**{separator}{explanation}"
-                    ),
-                ))
-                self.assertIn(
-                    "Evidence-based explanation: follow-up details at",
-                    parsed.visible_text,
-                )
-                self.assert_seek(self.anchors_with_label(parsed, "04:32")[0], 272)
+    def test_saved_evidence_rows_compact_without_changing_watch_ranges(self):
+        source = f"https://www.youtube.com/watch?v={_VIDEO_ID}"
+        report = (
+            "## Verdict\n\n**WATCH** — Useful examples.\n\n"
+            "## What you can learn\n\n- **Ownership** — Avoid stale writes.\n\n"
+            f"> [02:07]({source}&t=127) — Second supporting quote.\n\n"
+            f"> [01:58]({source}&t=118) — First supporting quote.\n\n"
+            "## Worth watching\n\n"
+            f"- Worth watching: [01:58–02:30]({source}&t=118) (approximate) — Worked example.\n\n"
+            f"> [02:07]({source}&t=127) — Redundant range quote.\n\n"
+            "## Signal versus fluff\n\n"
+            f"- **Substantive explanation: HIGH** — Examples at [02:07]({source}&t=127) and 01:58.\n\n"
+            f"> [01:58]({source}&t=118) — Redundant signal quote."
+        )
+        parsed = self.render(_saved_evaluation(report=report))
+        sections = [node for node in parsed.elements
+                    if node.tag == "section" and node.attrs.get("class") == "report-section"]
+        takeaways = next(node for node in sections if node.text.startswith("What you can learn"))
+        watching = next(node for node in sections if node.text.startswith("Worth watching"))
+        signal = next(node for node in sections if node.text.startswith("Signal versus fluff"))
+        links = [node for node in parsed.seek_anchors if _inside(node, takeaways)]
+        self.assertEqual([node.text for node in links], ["Start: 01:58"])
+        self.assert_seek(links[0], 118)
+        range_links = [node for node in parsed.seek_anchors if _inside(node, watching)]
+        self.assertEqual([node.text for node in range_links], ["01:58–02:30"])
+        self.assert_seek(range_links[0], 118)
+        self.assertEqual([node for node in parsed.anchors if _inside(node, signal)], [])
+        for quote in ("First supporting quote.", "Second supporting quote.",
+                      "Redundant range quote.", "Redundant signal quote."):
+            self.assertNotIn(quote, parsed.visible_text)
+
+    def test_untimed_evidence_does_not_invent_navigation_or_remove_other_quotes(self):
+        parsed = self.render(_saved_evaluation(report=(
+            "## Verdict\n\n**WATCH** — Useful context.\n\n"
+            "## What you can learn\n\n- **Ownership** — Avoid stale writes.\n\n"
+            "> Untimed source — Hidden support text.\n\nA separate observation.\n\n"
+            "> A quotation that belongs in the assessment."
+        )))
+        self.assertNotIn("Hidden support text.", parsed.visible_text)
+        self.assertIn("A quotation that belongs in the assessment.", parsed.visible_text)
+        evaluation = next(node for node in parsed.elements if node.attrs.get("class") == "evaluation")
+        self.assertEqual([node for node in parsed.seek_anchors if _inside(node, evaluation)], [])
 
     def test_raw_html_and_metadata_are_text_not_executable_markup(self):
         title = '<script>alert("TITLE_ATTACK")</script> & notes'
