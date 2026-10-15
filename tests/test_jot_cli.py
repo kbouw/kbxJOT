@@ -4,6 +4,8 @@ from contextlib import ExitStack, redirect_stderr, redirect_stdout
 from io import StringIO
 import os
 from pathlib import Path
+import shutil
+import subprocess
 import tempfile
 from types import SimpleNamespace
 import unittest
@@ -105,6 +107,7 @@ class WorkflowTests(unittest.TestCase):
         self.stack.enter_context(patch.dict(os.environ, {
             "ASSEMBLYAI_API_KEY": "fixture-assembly",
         }, clear=True))
+        self.stack.enter_context(patch("jot_config.get_evaluator", return_value="claude"))
         self.metadata_adapter = jot._get_video_metadata
         self.metadata = self.stack.enter_context(patch.object(
             jot, "_get_video_metadata", return_value=dict(_WORKFLOW_METADATA),
@@ -164,13 +167,46 @@ class WorkflowTests(unittest.TestCase):
                 self.assertIn(f"YouTube captions ({method})", document)
                 self.assertIn("[00:04] um, original evidence", document)
                 self.assertNotIn("## Watch-value evaluation", document)
-                self.evaluator.assert_called_with(source, "My learning goals", folder)
                 self.assertEqual(result, self.evaluation_paths)
                 for path in self.evaluation_paths:
                     self.assertIn(str(path), output)
                 self.download.assert_not_called()
                 self.audio.assert_not_called()
                 self.assertEqual(list(folder.iterdir()), [source])
+
+    @unittest.skipUnless(shutil.which("sh"), "requires a POSIX shell")
+    def test_playback_hint_preserves_path_through_actual_posix_shell(self):
+        marker = self.directory / "substitution-marker"
+        paths = [
+            self.directory / f"$(touch {marker}) report.html",
+            self.directory / f"`touch {marker}` report.html",
+            self.directory / "apostrophe's report; $HOME & (extra).html",
+            self.directory / "line\nbreak\tand spaces.html",
+        ]
+        for html_path in paths:
+            with self.subTest(html_path=html_path):
+                self.evaluator.return_value = (self.directory / "report.md", html_path)
+                with patch.object(jot.sys, "platform", "linux"):
+                    code, output, error, _ = self.run_command(evaluate=True)
+                self.assertEqual(code, 0, error)
+                command = output.split("For video playback (POSIX shell): ", 1)[1].split(jot.C.RESET, 1)[0]
+                parsed = subprocess.run(
+                    [shutil.which("sh"), "-c",
+                     'jot() { printf "%s\\\\0" jot "$@"; }; ' + command],
+                    check=True, capture_output=True,
+                )
+                self.assertEqual(parsed.stdout.decode().split("\0")[:-1],
+                                 ["jot", "open", str(html_path)])
+                self.assertFalse(marker.exists())
+
+    def test_windows_playback_hint_explicitly_targets_powershell(self):
+        html_path = Path("C:/Reports/O'Brien ‘left’ ‚low‛ $() `talk` & notes.html")
+        self.evaluator.return_value = (self.directory / "report.md", html_path)
+        with patch.object(jot.sys, "platform", "win32"):
+            code, output, error, _ = self.run_command(evaluate=True)
+        self.assertEqual(code, 0, error)
+        self.assertIn("For video playback (PowerShell): jot open 'C:/Reports/O''Brien ‘‘left’’ ‚‚low‛‛ $() `talk` & notes.html'",
+                      output)
 
     def test_missing_evaluator_stops_before_network_or_capture(self):
         self.preflight.side_effect = ValueError("Install Claude Code")

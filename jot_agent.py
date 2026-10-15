@@ -259,19 +259,13 @@ def _report(response: dict, metadata: dict) -> str:
              "", f"Audience: {_literal(response['verdict']['audience'])}. Confidence: {response['verdict']['confidence']}.",
              "", "## What you can learn", ""]
 
-    def evidence(citations):
-        for citation in citations:
-            timestamp = citation["timestamp"]
-            if timestamp is not None:
-                timestamp = int(timestamp)
-            label = "Untimed source" if timestamp is None else f"[{_clock(timestamp)}]({source}&t={timestamp})"
-            lines.extend([f"> {label} — {_literal(citation['quote'])}", ""])
-
     if not response["takeaways"]:
         lines.extend(["No substantive takeaways identified.", ""])
     for takeaway in response["takeaways"]:
-        lines.extend([f"- **{_literal(takeaway['idea'])}** — {_literal(takeaway['why'])}", ""])
-        evidence(takeaway["evidence"])
+        start = min((int(item["timestamp"]) for item in takeaway["evidence"]
+                     if item["timestamp"] is not None), default=None)
+        citation = f" · [Start: {_clock(start)}]({source}&t={start})" if start is not None else ""
+        lines.extend([f"- **{_literal(takeaway['idea'])}** — {_literal(takeaway['why'])}{citation}", ""])
     novelty = response["novelty"]
     lines.extend(["## Novelty", "", _literal(novelty["assessment"]), "",
                   f"Personal novelty: {novelty['personal']}. {_literal(novelty['reason'])}", "",
@@ -280,7 +274,6 @@ def _report(response: dict, metadata: dict) -> str:
         signal = response["signal"][category]
         rating = signal["rating"].replace("_", " ").upper()
         lines.extend([f"- **{label}: {rating}** — {_literal(signal['reason'])}", ""])
-        evidence(signal["evidence"])
     lines.extend(["## Worth watching", "", "Range boundaries are approximate; intervals include the start and exclude the end.", ""])
     for category, label in (("worth_watching", "Worth watching"), ("skippable", "Skippable")):
         if not response[category]:
@@ -288,7 +281,6 @@ def _report(response: dict, metadata: dict) -> str:
         for interval in response[category]:
             start, end = int(interval["start"]), int(interval["end"])
             lines.extend([f"- {label}: [{_clock(start)}–{_clock(end)}]({source}&t={start}) (approximate) — {_literal(interval['reason'])}", ""])
-            evidence(interval["evidence"])
     lines.extend(["## Limits", ""])
     lines.extend(f"- {_literal(limit)}" for limit in response["limits"])
     lines.extend(["- Speech-only assessment: visuals, demonstrations, and delivery are not observed.",
@@ -335,6 +327,7 @@ def publish_evaluation(request_path: Path, response_path: Path, output_dir: Path
 
 def evaluate_transcript(
     source: Path, background: str | None = None, output_dir: Path | None = None,
+    *, evaluator: str | None = None,
 ) -> tuple[Path, Path]:
     """Run a fresh evaluator and publish only a fully validated response.
 
@@ -357,6 +350,7 @@ def evaluate_transcript(
     response = invoke_evaluator(
         {**packet, "citation_lookup": citation_lookup},
         read_asset("evaluator-instructions.md"),
+        evaluator=evaluator,
     )
     serialized = json.dumps(response, ensure_ascii=False, indent=2, allow_nan=False) + "\n"
     counter = 0

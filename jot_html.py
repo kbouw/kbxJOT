@@ -414,6 +414,63 @@ def _split_takeaway(children: list[Token]) -> None:
     children[0].attrSet("class", "takeaway")
 
 
+def _compact_evidence(section: list[Token], video_id: str) -> None:
+    """Keep saved reports readable without discarding their source transcript.
+
+    Recognize jot's timestamp-and-quote blockquotes, not arbitrary quotations.
+    Takeaways retain one explicit start anchor; ranges already live in prose.
+    """
+    label = _section_label(section)
+    if label not in {"what you can learn", "worth watching", "signal versus fluff"}:
+        return
+    compact = []
+    previous = None
+    citations = {}
+    index = 0
+    while index < len(section):
+        token = section[index]
+        if token.type == "blockquote_open" and token.level == 0:
+            end = next(i for i in range(index + 1, len(section))
+                       if section[i].type == "blockquote_close" and section[i].level == 0)
+            paragraphs = [item for item in section[index + 1:end] if item.type == "inline"]
+            starts = []
+            recognized = bool(paragraphs)
+            for paragraph in paragraphs:
+                children = paragraph.children or []
+                if _inline_text(children).startswith("Untimed source — "):
+                    continue
+                if not children or children[0].type != "link_open":
+                    recognized = False
+                    break
+                close = next((i for i, item in enumerate(children) if item.type == "link_close"), None)
+                if (close is None or _youtube_id(children[0].attrGet("href") or "") != video_id
+                        or not re.fullmatch(_TIME_POINT, _inline_text(children[1:close]))
+                        or not _inline_text(children[close + 1:]).startswith(" — ")):
+                    recognized = False
+                    break
+                clock = _inline_text(children[1:close])
+                starts.append((_seconds(clock), clock))
+            if recognized:
+                if label == "what you can learn" and previous is not None and starts:
+                    start, clock = min(starts)
+                    saved = citations.get(id(previous))
+                    if saved is None or start < saved[1]:
+                        citations[id(previous)] = (previous, start, clock)
+                index = end + 1
+                continue
+        compact.append(token)
+        if token.type == "inline" and token.level == 3:
+            previous = token
+        index += 1
+    for paragraph, start, clock in citations.values():
+        opening = Token("link_open", "a", 1)
+        _seek_link(opening, video_id, start)
+        paragraph.children.extend((
+            _text_token(" · "), opening, _text_token(f"Start: {clock}"), Token("link_close", "a", -1),
+        ))
+    section[:] = compact
+
+
 def _render_section(markdown: MarkdownIt, section: list[Token]) -> str:
     def render(tokens: list[Token]) -> str:
         return markdown.renderer.render(tokens, markdown.options, {})
@@ -459,6 +516,8 @@ _CSS = """
 .transcript-section{margin-top:44px;border-top:1px solid var(--line);padding-top:24px;scroll-margin-top:28px}.transcript-section h2{font-size:28px;font-weight:400;line-height:1.3;margin:0 0 12px}.transcript-section>p{font-size:15px;color:var(--muted);margin:0 0 16px}.transcript-section details{border:1px solid var(--line);border-radius:var(--radius)}summary{cursor:pointer;min-height:48px;padding:12px 18px;font-size:16px;background:var(--soft)}.transcript-text{margin:0;padding:24px 20px;white-space:pre-wrap;overflow-wrap:anywhere;font-size:17px;line-height:1.8;color:var(--body);max-height:720px;overflow:auto;tab-size:4}.transcript-text .timestamp{min-height:28px}.footer{border-top:1px solid var(--line);margin-top:56px;padding-top:20px;font-size:14px;color:var(--muted);display:flex;gap:24px;justify-content:space-between;align-items:start}.footer p{margin:0}.licenses{max-width:680px}.licenses summary{background:none;color:var(--ink);padding:0;font-size:14px;min-height:44px}.licenses pre{white-space:pre-wrap;overflow-wrap:anywhere;font-size:13px;line-height:1.5;padding:16px;background:var(--soft);border:1px solid var(--line)}
 .report-section+.report-section{border-top:1px solid var(--line);margin-top:40px;padding-top:36px}.evaluation .report-section>:first-child{margin-top:0}.accordion{border:1px solid var(--line);border-radius:var(--radius)}.accordion-body{padding:22px 20px 2px}.evaluation .takeaway{display:block;margin-bottom:6px}.level{display:inline-block;color:var(--ink);background:var(--bg);border:1px solid var(--ink);border-radius:var(--radius);padding:0 9px;font-size:12px;font-weight:700;line-height:22px;letter-spacing:.08em;text-transform:uppercase;vertical-align:.12em;white-space:nowrap}.level-high{background:var(--ink);color:var(--bg)}.level-moderate{border-style:solid;box-shadow:inset 0 0 0 1px var(--ink)}.level-low{border-style:dashed}
 .signal-heading{display:block;margin-bottom:6px}
+.video-frame iframe[hidden]{display:none}.local-player-info{margin:0;padding:28px 24px;font-size:16px;line-height:1.6}.local-player-info code{font-size:14px;overflow-wrap:anywhere}
+.video-frame.local-reading{aspect-ratio:auto}
 @media(min-width:1100px){.evaluation .timestamp{min-height:26px}}@media(max-width:1000px){.layout{gap:36px;grid-template-columns:minmax(250px,340px) minmax(0,1fr)}.page{padding:40px 24px 60px}}@media(max-width:760px){.topbar{padding:12px 20px}.page{padding:32px 20px 48px}.hero{padding-bottom:28px;margin-bottom:28px}.layout{display:flex;flex-direction:column;gap:36px}.video-pane{position:static;width:100%;scroll-margin-top:16px}.video-frame{max-width:640px}.metadata{margin-top:16px}.section-nav{padding-top:8px}.report{width:100%}.report>h2{font-size:28px}.evaluation h3{font-size:25px}.evaluation h4{font-size:22px}.timestamp{min-height:32px;line-height:32px}.footer{flex-direction:column;gap:12px}.transcript-text{padding:18px 14px}}
 @media(max-width:760px),(pointer:coarse){a{min-width:44px;min-height:44px;display:inline-block}.evaluation .timestamp,.transcript-text .timestamp,.timestamp{min-height:44px;line-height:44px}}
 @media(max-width:760px),(pointer:coarse){.theme-toggle{min-height:44px}.section-nav a{min-height:44px}}
@@ -494,16 +553,39 @@ _THEME_JS = """
 })();
 """
 
-_JS = """
+_JS = r"""
 (() => {
   const frame = document.getElementById('video-player');
   const status = document.getElementById('player-status');
+  const playable = location.protocol === 'http:' || location.protocol === 'https:';
+  const localInfo = document.getElementById('local-player-info');
+  if (playable) {
+    frame.src = 'https://www.youtube.com/embed/' + frame.dataset.videoId + '?rel=0';
+    frame.hidden = false;
+    localInfo.hidden = true;
+  } else {
+    frame.parentElement.classList.add('local-reading');
+    let path = decodeURIComponent(location.pathname);
+    const windowsDrive = /^\/[a-z]:\//i.test(path);
+    const windows = windowsDrive || Boolean(location.hostname);
+    if (location.hostname) {
+      path = '\\\\' + location.hostname + path.replace(/\//g, '\\');
+    } else if (windowsDrive) {
+      path = path.slice(1).replace(/\//g, '\\');
+    }
+    const quoted = windows
+      ? "'" + path.replace(/['\u2018-\u201b]/g, quote => quote + quote) + "'"
+      : "'" + path.replace(/'/g, "'\\''") + "'";
+    document.getElementById('viewer-shell').textContent = windows ? 'PowerShell: ' : 'POSIX shell: ';
+    document.getElementById('viewer-command').textContent = 'jot open ' + quoted;
+    status.textContent = 'Timestamp links open YouTube in this reading copy.';
+  }
   let selected = null;
   document.addEventListener('click', (event) => {
     const target = event.target instanceof Element ? event.target.closest('a[data-start]') : null;
     if (!target || event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
     const seconds = target.dataset.start;
-    if (!frame || !/^\\d+$/.test(seconds)) return;
+    if (!playable || !frame || !/^\d+$/.test(seconds)) return;
     event.preventDefault();
     const url = new URL('https://www.youtube.com/embed/' + frame.dataset.videoId);
     url.searchParams.set('start', seconds);
@@ -520,15 +602,12 @@ _JS = """
     status.textContent = 'Seek requested: ' + label + '. YouTube may require playback permission; this page cannot confirm playback.';
     frame.closest('.video-pane').scrollIntoView({block: 'start', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth'});
   });
-  if (location.protocol === 'file:') {
-    document.getElementById('playback-note').textContent = 'Opened as a local file. YouTube may reject file playback: serve this page over HTTP or use the direct YouTube link. The report, transcript and fonts work offline.';
-  }
 })();
 """
 
 
 def build_evaluation_html(document: str) -> str:
-    """Return one shareable HTML page containing the complete saved evaluation.
+    """Return a portable reader view of a saved evaluation, with compact source navigation.
 
     Requires jot_assets beside this module only while rendering; the returned page
     embeds Libron v0.31 and its license. Rendering never accesses the network.
@@ -563,6 +642,7 @@ def build_evaluation_html(document: str) -> str:
     preamble, sections = _split_sections(tokens)
     sections.sort(key=_section_rank)
     for section in sections:
+        _compact_evidence(section, video_id)
         if _section_label(section) == "what you can learn":
             for token in section:
                 if token.type == "inline" and token.children:
@@ -570,7 +650,22 @@ def build_evaluation_html(document: str) -> str:
         elif _section_label(section) == "signal versus fluff":
             for token in section:
                 children = token.children
-                if token.type != "inline" or not children or children[0].type != "strong_open":
+                if token.type != "inline" or not children:
+                    continue
+                # Signal ratings are assessments, not video navigation.
+                plain = []
+                seeking = False
+                for child in children:
+                    if child.type == "link_open":
+                        seeking = child.attrGet("data-start") is not None
+                        if seeking:
+                            continue
+                    elif child.type == "link_close" and seeking:
+                        seeking = False
+                        continue
+                    plain.append(child)
+                token.children = children = plain
+                if children[0].type != "strong_open":
                     continue
                 end = next((i for i, child in enumerate(children) if child.type == "span_close"), None)
                 if end is None:
@@ -634,9 +729,9 @@ def build_evaluation_html(document: str) -> str:
 <div class="layout">
 <aside class="video-pane" aria-label="Video and report information">
 <p class="video-title">Watch alongside the notes</p>
-<div class="video-frame"><iframe id="video-player" data-video-id="{video_id}" src="https://www.youtube.com/embed/{video_id}?rel=0" title="YouTube video: {escape(plain_title, quote=True)}" allow="autoplay; encrypted-media; picture-in-picture; fullscreen" allowfullscreen referrerpolicy="strict-origin-when-cross-origin"></iframe></div>
+<div class="video-frame"><iframe id="video-player" data-video-id="{video_id}" hidden title="YouTube video player" allow="accelerometer; autoplay; clipboard-write; encrypted-media; picture-in-picture; web-share" allowfullscreen referrerpolicy="strict-origin-when-cross-origin"></iframe><p id="local-player-info" class="local-player-info">To play video here, open report in local viewer:<br><span id="viewer-shell">POSIX shell: </span><code id="viewer-command">jot open 'report.html'</code><br>Keep terminal running while watching.</p></div>
 <p id="player-status" class="player-status" role="status" aria-live="polite" aria-atomic="true">Choose a timestamp to request that moment in the video.</p>
-<p id="playback-note" class="playback-note">Video playback needs an internet connection. YouTube may require this page to be served over HTTP rather than opened as a file. Use the direct link if embedding is unavailable.</p>
+<p id="playback-note" class="playback-note">Reading works offline. Video playback needs internet and the local HTTP viewer; use the direct YouTube link if embedding is unavailable.</p>
 <a class="direct-link" href="{watch_url}" rel="noopener noreferrer">Open directly on YouTube ↗</a>
 <noscript><p class="playback-note">JavaScript is off. Timestamp links open the requested moment on YouTube.</p></noscript>
 <dl class="metadata">{''.join(rows)}</dl>
@@ -652,7 +747,7 @@ def build_evaluation_html(document: str) -> str:
 </section>
 </article>
 </div>
-<footer class="footer"><p>jot · A portable reading copy. Evaluation wording is preserved from the saved report.</p>
+<footer class="footer"><p>jot · A portable reading copy. Source transcript included for checking the assessment.</p>
 <details class="licenses"><summary>Libron v0.31 &amp; Flexoki · licenses</summary><pre>{escape(license_text)}</pre></details></footer>
 </main>
 <script>{_JS}</script>

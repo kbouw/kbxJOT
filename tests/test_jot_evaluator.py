@@ -158,7 +158,7 @@ class EvaluatorRuntimeTests(unittest.TestCase):
         self.executable.chmod(0o755)
 
     def invoke(self):
-        return jot_evaluator.invoke_evaluator(self.packet, _INSTRUCTIONS)
+        return jot_evaluator.invoke_evaluator(self.packet, _INSTRUCTIONS, evaluator="claude")
 
     def assert_rejected(self, message):
         with self.assertRaisesRegex(ValueError, message) as raised:
@@ -206,6 +206,30 @@ class EvaluatorRuntimeTests(unittest.TestCase):
             time.sleep(0.01)
         self.fail(f"Evaluator helper {pid} is still running after cleanup")
 
+    def test_unconfigured_default_never_starts_an_evaluator(self):
+        with patch.dict(os.environ, {"JOT_CONFIG_DIR": str(self.directory / "jot-config")}):
+            with patch.object(jot_evaluator, "_run_evaluator") as exchange:
+                with self.assertRaisesRegex(ValueError, "jot setup"):
+                    jot_evaluator.invoke_evaluator(self.packet, _INSTRUCTIONS)
+            exchange.assert_not_called()
+
+    def test_saved_default_uses_the_same_contained_runtime(self):
+        import jot_config
+
+        with patch.dict(os.environ, {"JOT_CONFIG_DIR": str(self.directory / "jot-config")}):
+            jot_config.set_evaluator("claude")
+            response = jot_evaluator.invoke_evaluator(self.packet, _INSTRUCTIONS)
+        self.assertTrue(response["safe_configuration"])
+        self.assertTrue(response["empty_cwd"])
+
+    def test_explicit_selection_can_bypass_invalid_saved_configuration(self):
+        configuration = self.directory / "jot-config"
+        configuration.mkdir()
+        (configuration / "settings.json").write_text("not JSON", encoding="utf-8")
+        with patch.dict(os.environ, {"JOT_CONFIG_DIR": str(configuration)}):
+            self.assertTrue(self.invoke()["safe_configuration"])
+        self.assertEqual((configuration / "settings.json").read_text(encoding="utf-8"), "not JSON")
+
     def test_source_and_background_stay_out_of_process_arguments(self):
         # Larger than a typical argv limit, and includes non-ASCII source bytes.
         self.packet["source_document"] *= 10000
@@ -228,13 +252,13 @@ class EvaluatorRuntimeTests(unittest.TestCase):
 
     def test_locator_resolves_relative_path_before_changing_working_directory(self):
         with patch.dict(os.environ, {"PATH": os.path.relpath(self.bin_directory)}):
-            self.assertEqual(jot_evaluator.find_evaluator(), str(self.executable))
+            self.assertEqual(jot_evaluator.find_evaluator("claude"), str(self.executable))
             self.assertTrue(self.invoke()["safe_configuration"])
 
     def test_missing_cli_explains_installation_and_authentication(self):
         self.executable.unlink()
         with self.assertRaisesRegex(ValueError, "Install the Claude Code CLI") as raised:
-            jot_evaluator.find_evaluator()
+            jot_evaluator.find_evaluator("claude")
         self.assertIn("PATH", str(raised.exception))
         self.assertIn("claude auth login", str(raised.exception))
         self.assert_rejected("Claude Code is required")
@@ -242,7 +266,7 @@ class EvaluatorRuntimeTests(unittest.TestCase):
     def test_nonexecutable_cli_is_not_selected(self):
         self.executable.chmod(0o644)
         with self.assertRaisesRegex(ValueError, "Claude Code is required"):
-            jot_evaluator.find_evaluator()
+            jot_evaluator.find_evaluator("claude")
 
     def test_missing_interpreter_reports_startup_failure(self):
         self.executable.write_text("#!/jot-nonexistent-interpreter\n", encoding="utf-8")
@@ -271,7 +295,7 @@ class EvaluatorRuntimeTests(unittest.TestCase):
             "import json, sys, jot_evaluator\n"
             "packet = json.load(sys.stdin)\n"
             "try:\n"
-            "    jot_evaluator.invoke_evaluator(packet, 'trusted test instructions')\n"
+            "    jot_evaluator.invoke_evaluator(packet, 'trusted test instructions', evaluator='claude')\n"
             "except KeyboardInterrupt:\n"
             "    sys.exit(130)\n"
         )
@@ -379,6 +403,200 @@ class EvaluatorRuntimeTests(unittest.TestCase):
     def test_invalid_utf8_output_is_rejected(self):
         self.install_cli("invalid_utf8")
         self.assert_rejected("returned invalid JSON")
+
+
+_CODEX_CLI_FIXTURE = r'''
+import argparse
+import json
+import os
+from pathlib import Path
+import sys
+
+parser = argparse.ArgumentParser()
+parser.add_argument("command", choices=["exec"])
+parser.add_argument("--ephemeral", action="store_true")
+parser.add_argument("--ignore-user-config", action="store_true")
+parser.add_argument("--ignore-rules", action="store_true")
+parser.add_argument("--skip-git-repo-check", action="store_true")
+parser.add_argument("--sandbox", choices=["read-only"], required=True)
+parser.add_argument("--json", action="store_true")
+parser.add_argument("--output-schema", required=True)
+parser.add_argument("-c", action="append", default=[])
+parser.add_argument("prompt", choices=["-"])
+args = parser.parse_args()
+configuration = dict(setting.split("=", 1) for setting in args.c)
+packet = json.load(sys.stdin)
+schema = json.loads(Path(args.output_schema).read_text(encoding="utf-8"))
+if not all((args.ephemeral, args.ignore_user_config, args.ignore_rules, args.skip_git_repo_check, args.json)):
+    sys.exit(21)
+if configuration.get("approval_policy") != '"never"' or configuration.get("web_search") != '"disabled"':
+    sys.exit(22)
+if configuration.get("features.shell_tool") != "false" or configuration.get("mcp_servers") != "{}":
+    sys.exit(23)
+if any(configuration.get("features." + feature) != "false"
+       for feature in ("view_image", "plugins", "hooks", "code_mode.enabled")):
+    sys.exit(25)
+provider = json.loads(configuration["model_provider"])
+if any(configuration.get(f"model_providers.{provider}.{kind}_max_retries") != "0"
+       for kind in ("request", "stream")):
+    sys.exit(24)
+
+def emit(response):
+    for event in (
+        {"type": "thread.started", "thread_id": "fresh-test-thread"},
+        {"type": "turn.started"},
+        {"type": "item.completed", "item": {
+            "id": "item_0", "type": "agent_message", "text": json.dumps(response),
+        }},
+        {"type": "turn.completed", "usage": {"input_tokens": 10, "output_tokens": 10}},
+    ):
+        print(json.dumps(event))
+
+if MODE == "raw":
+    sys.stdout.write(PAYLOAD)
+elif MODE == "nonzero":
+    emit({"would_be_response": True})
+    print("private-auth-diagnostic", file=sys.stderr)
+    sys.exit(7)
+elif MODE == "invalid_utf8":
+    sys.stdout.buffer.write(b"\xff\xfe")
+else:
+    emit({
+        "source_in_argv": any(packet["source_document"] in arg for arg in sys.argv[1:]),
+        "empty_cwd": not any(Path.cwd().iterdir()),
+        "cwd": str(Path.cwd()),
+        "session_inherited": "CODEX_THREAD_ID" in os.environ,
+        "auth_location_preserved": os.environ.get("CODEX_HOME") == AUTH_DIRECTORY,
+        "native_schema": schema,
+        "packet_schema": packet["response_schema"],
+        "instructions": json.loads(configuration["developer_instructions"]),
+    })
+'''
+
+
+@unittest.skipUnless(os.name == "posix", "Disposable CLI fixtures use POSIX executables")
+class CodexEvaluatorRuntimeTests(unittest.TestCase):
+    def setUp(self):
+        self.stack = ExitStack()
+        self.addCleanup(self.stack.close)
+        self.directory = Path(self.stack.enter_context(tempfile.TemporaryDirectory())).resolve()
+        self.executable = self.directory / "codex"
+        self.environment = {
+            "PATH": str(self.directory), "CODEX_HOME": str(self.directory / "native-auth"),
+            "CODEX_THREAD_ID": "host-session",
+            "JOT_CONFIG_DIR": str(self.directory / "jot-settings"),
+        }
+        self.stack.enter_context(patch.dict(os.environ, self.environment, clear=True))
+        self.packet = {
+            "source_document": "Untrusted source café 雪 /resume host-session",
+            "viewer_background": None,
+            "response_schema": {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "type": "object", "additionalProperties": False,
+                "properties": {
+                    "not": {"type": "string", "not": {"pattern": "[\\r\\n]"}},
+                    "signal": {
+                        "type": "object", "properties": {"rating": {"type": "string"}},
+                        "if": {"properties": {"rating": {"const": "high"}}},
+                        "then": {"required": ["evidence"]},
+                    },
+                },
+            },
+        }
+        self.install_cli()
+
+    def install_cli(self, mode="success", payload=""):
+        self.executable.write_text(
+            f"#!{sys.executable}\nMODE={mode!r}\nPAYLOAD={payload!r}\n"
+            f"AUTH_DIRECTORY={self.environment['CODEX_HOME']!r}\n" + _CODEX_CLI_FIXTURE,
+            encoding="utf-8",
+        )
+        self.executable.chmod(0o755)
+
+    def invoke(self, **kwargs):
+        return jot_evaluator.invoke_evaluator(self.packet, _INSTRUCTIONS, **{"evaluator": "codex", **kwargs})
+
+    def success_events(self, text='{"accepted":true}'):
+        return [
+            {"type": "thread.started", "thread_id": "fresh"},
+            {"type": "turn.started"},
+            {"type": "item.completed", "item": {"type": "agent_message", "text": text}},
+            {"type": "turn.completed", "usage": {}},
+        ]
+
+    def set_events(self, events):
+        self.install_cli("raw", "\n".join(json.dumps(event) for event in events) + "\n")
+
+    def assert_rejected(self, message="successfully completed turn"):
+        with self.assertRaisesRegex(ValueError, message) as raised:
+            self.invoke()
+        self.assertNotIn(self.packet["source_document"], str(raised.exception))
+        self.assertNotIn("private-auth-diagnostic", str(raised.exception))
+
+    def test_native_boundary_is_fresh_restricted_and_preserves_native_auth_location(self):
+        self.packet["source_document"] *= 10000
+        response = self.invoke()
+        self.assertFalse(response["source_in_argv"])
+        self.assertTrue(response["empty_cwd"])
+        self.assertFalse(response["session_inherited"])
+        self.assertTrue(response["auth_location_preserved"])
+        self.assertEqual(response["instructions"], _INSTRUCTIONS)
+        self.assertFalse(Path(response["cwd"]).exists())
+
+    def test_native_schema_adaptation_preserves_packet_and_named_properties(self):
+        from jsonschema import Draft202012Validator
+
+        response = self.invoke()
+        self.assertEqual(response["packet_schema"], self.packet["response_schema"])
+        self.assertEqual(response["native_schema"]["properties"]["not"], {"type": "string"})
+        candidate = {"not": "two\nlines", "signal": {"rating": "high"}}
+        self.assertTrue(Draft202012Validator(response["native_schema"]).is_valid(candidate))
+        self.assertFalse(Draft202012Validator(self.packet["response_schema"]).is_valid(candidate))
+
+    def test_persisted_codex_default_and_explicit_claude_override_are_distinct(self):
+        import jot_config
+
+        jot_config.set_evaluator("codex")
+        self.assertTrue(self.invoke(evaluator=None)["auth_location_preserved"])
+        # No Claude executable exists: an override must not silently run Codex.
+        with self.assertRaisesRegex(ValueError, "claude auth login"):
+            self.invoke(evaluator="claude")
+
+    def test_nonzero_status_rejects_even_complete_native_success(self):
+        self.install_cli("nonzero")
+        self.assert_rejected("exit status 7")
+
+    def test_missing_cli_identifies_native_login_command(self):
+        self.executable.unlink()
+        self.assert_rejected("codex login")
+
+    def test_success_requires_final_object_and_complete_turn(self):
+        self.set_events(self.success_events())
+        self.assertEqual(self.invoke(), {"accepted": True})
+        success = self.success_events()
+        invalid_sequences = [
+            [], success[:-1], success[1:], [success[0], *success[2:]],
+            success + [success[-1]],
+            [*success[:2], {"type": "turn.failed", "error": {"message": "private-auth-diagnostic"}}, *success[2:]],
+            [*success[:3], {"type": "error", "message": "private-auth-diagnostic"}, success[-1]],
+            [*success[:2], {"type": "item.completed", "item": {"type": "error"}}, *success[2:]],
+            [*success[:2], {"type": "item.completed", "item": None}, *success[2:]],
+        ]
+        for sequence in invalid_sequences:
+            with self.subTest(sequence=sequence):
+                self.set_events(sequence)
+                self.assert_rejected()
+
+    def test_failed_or_malformed_final_messages_never_return_response(self):
+        for text in ("[]", "null", "plain text", '{"a":1,"a":2}', '{"a":NaN}', '{"a":1e999}'):
+            with self.subTest(text=text):
+                self.set_events(self.success_events(text))
+                self.assert_rejected()
+        for payload in ('{"type":"thread.started","type":"thread.started"}', "not JSON"):
+            self.install_cli("raw", payload)
+            self.assert_rejected()
+        self.install_cli("invalid_utf8")
+        self.assert_rejected()
 
 
 @unittest.skipUnless(os.name == "nt", "Native Windows Job Object regression")

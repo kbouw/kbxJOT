@@ -7,20 +7,12 @@ Turn a YouTube video into a portable **HTML watch page**: a WATCH / SKIM / SKIP 
 ## What you need
 
 - [uv](https://docs.astral.sh/uv/getting-started/installation/) and Python 3.10 or newer.
-- An installed, authenticated [Claude Code CLI](https://code.claude.com/docs/en/setup). Evaluation uses its existing model access; no additional jot API key is required. Subscription limits or usage charges still apply.
-- A host assistant that can run local commands and deliver files. It does **not** need subagent delegation. Its model can differ from the Claude evaluator.
+- An installed, authenticated evaluator: [Codex CLI](https://developers.openai.com/codex/cli) **or** [Claude Code](https://code.claude.com/docs/en/setup). You only need the one you choose.
+- A host assistant that can run local commands and deliver files. It does **not** need subagent delegation, and its model can differ from your evaluator.
 
-Claude Code is currently the supported evaluator. The invocation is verified with Claude Code 2.1.277 and requires its `--safe-mode`, tool-disabling, and structured-output flags. A local Qwen model or a Codex session alone does not supply this evaluator access.
+Evaluation reuses your selected CLI's login; subscription limits or usage charges still apply. No additional jot API key is required. Verified with Codex 0.162.1 and Claude Code 2.1.277.
 
 ## Set up once
-
-Install Claude Code using its setup guide, then sign in:
-
-```bash
-claude auth login
-```
-
-Install jot:
 
 ```bash
 git clone https://github.com/kebaux/kbxJOT.git jot
@@ -28,7 +20,33 @@ cd jot
 uv sync
 ```
 
-Open your host assistant in this `jot` folder and allow local command and file access. Use `uv run jot` inside the checkout to avoid the unrelated macOS command named `jot`.
+Install your chosen evaluator using its setup guide, then sign in with **one** of:
+
+```bash
+codex login
+# or, for Claude Code:
+claude auth login
+```
+
+Choose your default in an interactive terminal:
+
+```bash
+uv run jot setup
+```
+
+Setup checks installation and authentication, then saves your explicit choice—not credentials. For noninteractive setup, use `uv run jot config evaluator codex` or replace `codex` with `claude`.
+
+Open your host assistant in the checkout and allow local command and file access. Use `uv run jot` inside the checkout to avoid the unrelated macOS command named `jot`.
+
+### Change the evaluator
+
+| Command | Effect |
+|---|---|
+| `uv run jot config evaluator` | Show your saved default |
+| `uv run jot config evaluator codex` | Save Codex as the default; use `claude` to choose Claude Code |
+| `uv run jot 'YOUTUBE_URL' --evaluate --evaluator codex` | Override the default for one evaluation without changing it |
+
+Preferences are saved under `~/.config/jot` (`$XDG_CONFIG_HOME/jot` or `JOT_CONFIG_DIR` can override this). Without a saved default, pass `--evaluator` or run setup; jot never silently chooses or switches providers.
 
 ## Create a watch page
 
@@ -50,20 +68,41 @@ Evaluation alone can take up to 10 minutes, in addition to caption capture. Allo
 
 ## Use the result
 
-Open the delivered `.evaluation.html` file in a modern browser. Share the HTML file alone: no companion assets, keys, or server are needed for reading. A remote assistant must provide a downloadable file, not a path on its own machine.
+Share the HTML file alone: the report, transcript, and fonts work offline. A remote assistant must provide a downloadable file, not a path on its own machine.
+
+For video playback, use the local viewer:
+
+```bash
+uv run jot open 'transcripts/talk.evaluation.html'
+```
+
+This opens your browser and serves only the selected report on `127.0.0.1`. Keep the terminal running; Ctrl-C stops it. If the browser does not open, use the printed URL.
+
+Playback hints quote the full file path for the labeled POSIX shell or PowerShell; use that shell when copying them.
+
+Double-clicked HTML remains readable offline, but YouTube playback requires HTTP and internet. No public hosting or YouTube API key is needed. If the video disallows embedding, use its direct YouTube link.
+
+Takeaways have one **Start** link; watch/skip ranges stay inline. Signal-versus-fluff ratings have no timestamp links or quote rows. Full evidence remains in the saved response JSON and source transcript.
 
 - **English captions unavailable?** The default evaluation workflow stops, even when captions exist in another language. It never silently downloads audio or uses paid transcription.
 - **Evaluator or validation failure?** jot stops without publishing a report. The saved transcript remains available. There is no fallback to host-assistant self-evaluation or automatic retry.
 - **Timeout, interruption, or excessive evaluator output?** jot stops the evaluator process tree without publishing a report. Evaluation has a 10-minute deadline and an 8 MiB limit on each output stream.
-- **Reading works offline; playback needs internet.** If the embedded video is blocked, use the page's direct YouTube link.
 
-The evaluator runs in a fresh noninteractive process with customizations, tools, and MCP disabled, without your host conversation. Local validation checks response structure, exact source quotes, timestamps, and ranges—not factual truth, semantic quality, or complete model reading. Assessments are speech-only; check important claims against the transcript.
+Evaluators run fresh sessions outside your project, without the host conversation. Claude Code is tool-free. **Codex is not tool-free:** it uses a read-only sandbox with restrictive settings; some built-in tools remain exposed.
+
+Local validation checks the full response schema, exact source quotes, timestamps, and ranges—not factual truth, semantic quality, or complete reading. Assessments are speech-only.
 
 ## Advanced use
 
 Run `uv run jot --help` for transcript-only capture, explicit audio options, and rendering saved reports. Paid audio transcription requires separate setup and permission; it is not part of default evaluation. Coordinator usage is available through `uv run jot --agent-instructions`.
 
-**Workflow change:** `--evaluate` now invokes Claude Code and the evidence-validation gate, not OpenRouter. The old manual preparation/publication CLI actions have been removed; jot owns those stages.
+Refresh an existing report's layout without another evaluation:
+
+```bash
+uv run jot --render-html 'transcripts/talk.evaluation.md'
+```
+
+This updates the HTML, leaving the saved Markdown and response JSON unchanged.
 
 ## Licenses
 
