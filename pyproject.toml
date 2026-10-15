@@ -1,7 +1,7 @@
 [project]
 name = "jot"
 version = "0.1.0"
-description = "Timestamped YouTube transcripts, provider-neutral agent evaluations, optional OpenRouter, and portable watch pages."
+description = "YouTube transcripts and validated HTML watch pages with jot-controlled Claude Code evaluation."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
@@ -28,7 +28,10 @@ only-include = [
     "jot.py",
     "jot_html.py",
     "jot_agent.py",
+    "jot_evaluator.py",
+    "jot_evaluator_windows.py",
     "jot_assets/agent-workflow.md",
+    "jot_assets/evaluator-instructions.md",
     "jot_assets/evaluation-rubric.md",
     "jot_assets/evaluation-response.schema.json",
     "jot_assets/Libron-Regular.woff2",
@@ -44,7 +47,10 @@ only-include = [
     "jot.py",
     "jot_html.py",
     "jot_agent.py",
+    "jot_evaluator.py",
+    "jot_evaluator_windows.py",
     "jot_assets/agent-workflow.md",
+    "jot_assets/evaluator-instructions.md",
     "jot_assets/evaluation-rubric.md",
     "jot_assets/evaluation-response.schema.json",
     "jot_assets/Libron-Regular.woff2",

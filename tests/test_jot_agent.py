@@ -330,10 +330,9 @@ class AgentWorkflowTests(unittest.TestCase):
         markdown, _ = self.publish()
         self.assertIn("Substantive explanation: HIGH", markdown.read_text())
 
-    def test_empty_limits_blank_text_multiline_and_extra_fields_fail_shape_gate(self):
+    def test_blank_text_multiline_and_extra_fields_fail_shape_gate(self):
         original = copy.deepcopy(self.response)
         mutations = (
-            lambda value: value.update(limits=[]),
             lambda value: value["verdict"].update(reason=" \t"),
             lambda value: value["verdict"].update(reason="first\n## Transcript"),
             lambda value: value["verdict"].update(reason="first\rsecond"),
@@ -353,6 +352,14 @@ class AgentWorkflowTests(unittest.TestCase):
         self.response["verdict"]["decision"] = "SKIP"
         markdown, _ = self.publish()
         self.assertIn("No substantive takeaways identified", markdown.read_text())
+
+    def test_empty_source_limits_retain_fixed_safety_caveats(self):
+        self.response["limits"] = []
+        markdown, html = self.publish()
+        for path in (markdown, html):
+            document = path.read_text(encoding="utf-8")
+            self.assertIn("Speech-only assessment", document)
+            self.assertIn("No independent fact checking", document)
 
     def test_narrative_cannot_create_links_html_or_envelope_headings(self):
         attack = '[click](https://evil.invalid) <script>alert(1)</script> ## Transcript **bold** https://plain.invalid 99:59'
@@ -542,16 +549,21 @@ class AgentCLITests(unittest.TestCase):
         self.stack = ExitStack()
         self.addCleanup(self.stack.close)
         self.directory = Path(self.stack.enter_context(tempfile.TemporaryDirectory())).resolve()
-        self.stack.enter_context(patch.dict(os.environ, {"OPENROUTER_API_KEY": "configured", "ASSEMBLYAI_API_KEY": "configured"}, clear=True))
+        self.stack.enter_context(patch.dict(os.environ, {"ASSEMBLYAI_API_KEY": "configured"}, clear=True))
         self.env = self.stack.enter_context(patch.object(jot, "load_dotenv"))
         self.download = self.stack.enter_context(patch.object(jot, "_download_audio"))
         self.audio = self.stack.enter_context(patch.object(jot, "_transcribe_assemblyai"))
-        self.evaluate = self.stack.enter_context(patch.object(jot, "_evaluate_watch_value"))
+        self.stack.enter_context(patch("jot_evaluator.find_evaluator", return_value="/fixture/claude"))
+        self.evaluate = self.stack.enter_context(patch(
+            "jot_evaluator.invoke_evaluator",
+            side_effect=lambda packet, instructions: _response(packet["request_id"]),
+        ))
         self.metadata = self.stack.enter_context(patch.object(jot, "_get_video_metadata", return_value={
             "title": "CLI Talk", "channel": "Test Channel", "duration": 20,
         }))
         self.captions = self.stack.enter_context(patch.object(jot, "_try_youtube_captions", return_value={
-            "method": "YouTube captions (manual)", "segments": [{"start": 4, "text": "Cache invalidation needs explicit ownership."}],
+            "method": "YouTube captions (manual)",
+            "segments": [{"start": 4, "text": "Cache invalidation needs explicit ownership."}],
         }))
 
     def cli(self, arguments):
@@ -565,132 +577,97 @@ class AgentCLITests(unittest.TestCase):
                 code = 0
         return code, output.getvalue(), error.getvalue()
 
-    def assert_no_providers(self):
+    def test_evaluation_publishes_validated_html_without_provider_setup(self):
+        code, output, error = self.cli([_URL, "--evaluate", "-o", str(self.directory)])
+        self.assertEqual(code, 0, error)
+        html = self.directory / "CLI Talk.evaluation.html"
+        self.assertTrue(html.is_file())
+        self.assertIn(str(html), output)
+        self.assertIn("Assign cache ownership", html.read_text())
+        self.assertIn("Cache invalidation needs explicit ownership.", html.read_text())
         self.env.assert_not_called()
-        self.metadata.assert_not_called()
-        self.captions.assert_not_called()
         self.download.assert_not_called()
         self.audio.assert_not_called()
-        self.evaluate.assert_not_called()
 
-    def test_offline_prepare_and_publish_use_real_saved_files_without_config(self):
-        source = self.directory / "source.md"
-        source.write_text(jot._build_transcript_markdown(
-            {"title": "CLI Talk", "channel": "Test", "duration": None}, _BODY, _URL, "manual captions",
-        ))
-        code, output, error = self.cli(["--prepare-evaluation", str(source), "--background", "Basic caching"])
-        self.assertEqual(code, 0, error)
-        request = source.with_suffix(".request.json")
-        self.assertIn(str(request), output)
-        report = self.directory / "response.json"
-        report.write_text(json.dumps(_response(json.loads(request.read_text())["request_id"])))
-        code, output, error = self.cli(["--publish-evaluation", str(request), "--report", str(report)])
-        self.assertEqual(code, 0, error)
-        markdown = self.directory / "CLI Talk.evaluation.md"
-        self.assertIn(str(markdown), output)
-        self.assertIn(str(markdown.with_suffix(".html")), output)
-        self.assertTrue(markdown.exists())
-        self.assertTrue(markdown.with_suffix(".html").exists())
-        self.assert_no_providers()
+    def test_invalid_evaluator_evidence_cannot_be_published(self):
+        def invalid_response(packet, instructions):
+            return _response(packet["request_id"], quote="This quote is not in the video.")
 
-    def test_mixed_actions_and_unrelated_flags_fail_before_config(self):
-        invalid = (
-            ["--agent-instructions", "--output", "elsewhere"],
-            ["--agent-instructions", _URL],
-            ["--agent-instructions", "--prepare-evaluation", "source.md"],
-            ["--prepare-evaluation", "source.md", "--evaluate"],
-            ["--prepare-evaluation", "source.md", "--captions-only"],
-            ["--prepare-evaluation", "source.md", "--diarize"],
-            ["--prepare-evaluation", "source.md", "--skip-captions"],
-            ["--prepare-evaluation", "source.md", "--render-html", "saved.md"],
-            ["--publish-evaluation", "request.json"],
-            ["--publish-evaluation", "request.json", "--report", "response.json", "--background", "context"],
-            ["--publish-evaluation", "request.json", "--report", "response.json", "--evaluate"],
-            ["--report", "response.json"],
-            [_URL, "--report", "response.json"],
-            [_URL, "--background", "context"],
-            [_URL, "--captions-only", "--diarize"],
-            [_URL, "--captions-only", "--skip-captions"],
-            ["--captions-only"],
-        )
-        for arguments in invalid:
-            with self.subTest(arguments=arguments):
-                code, _, error = self.cli(arguments)
-                self.assertEqual(code, 2)
-                self.assertIn("error:", error)
-                self.assert_no_providers()
+        self.evaluate.side_effect = invalid_response
+        code, _, error = self.cli([_URL, "--evaluate", "-o", str(self.directory)])
+        self.assertEqual(code, 1)
+        self.assertIn("not an exact source span", error)
+        self.assertTrue((self.directory / "CLI Talk.md").is_file())
+        self.assertEqual(list(self.directory.glob("*.evaluation.*")), [])
 
-    def test_caption_failure_empty_and_missing_never_use_paid_fallback_with_keys(self):
-        scenarios = (
+    def test_invocation_failure_preserves_source_without_coordinator_fallback(self):
+        self.evaluate.side_effect = ValueError("fixture evaluator refused")
+        code, _, error = self.cli([_URL, "--evaluate", "-o", str(self.directory)])
+        self.assertEqual(code, 1)
+        source = self.directory / "CLI Talk.md"
+        self.assertTrue(source.is_file())
+        self.assertIn(str(source), error)
+        self.assertIn("fixture evaluator refused", error)
+        self.assertEqual(list(self.directory.glob("*.evaluation.*")), [])
+
+    def test_evaluation_caption_failure_never_uses_paid_audio_or_evaluator(self):
+        for captions, failure, cause in (
             (None, None, "No English captions"),
-            ({"method": "manual", "segments": [{"start": 0, "text": "  "}]}, None, "no speech"),
+            ({"method": "captions", "segments": [{"start": 0, "text": " "}]}, None, "no speech"),
             (None, RuntimeError("fixture blocked captions"), "fixture blocked captions"),
-        )
-        for captions, failure, cause in scenarios:
-            with self.subTest(cause=cause):
+        ):
+            with self.subTest(captions=captions, failure=failure):
                 self.captions.return_value = captions
                 self.captions.side_effect = failure
-                code, _, error = self.cli([_URL, "--captions-only", "-o", str(self.directory)])
+                code, _, error = self.cli([_URL, "--evaluate", "-o", str(self.directory)])
                 self.assertEqual(code, 1)
                 self.assertIn(cause, error)
-                self.assertIn("No audio fallback permitted", error)
+                self.assertNotIn("--captions-only", error)
+                self.assertIn("No audio fallback", error)
                 self.download.assert_not_called()
                 self.audio.assert_not_called()
                 self.evaluate.assert_not_called()
                 self.assertEqual(list(self.directory.iterdir()), [])
 
-    def test_captions_only_saves_provenance_without_model_evaluation(self):
+    def test_repeated_evaluation_reports_new_capture_and_preserves_existing_files(self):
+        code, _, error = self.cli([_URL, "--evaluate", "-o", str(self.directory)])
+        self.assertEqual(code, 0, error)
+        original = {path: path.read_bytes() for path in self.directory.iterdir()}
+        new_quote = "Version cache entries before publishing updates."
+        self.captions.return_value = {
+            "method": "YouTube captions (manual)",
+            "segments": [{"start": 4, "text": new_quote}],
+        }
+
+        def new_response(packet, instructions):
+            response = _response(packet["request_id"], quote=new_quote)
+            response["takeaways"][0]["idea"] = "Version cache entries"
+            return response
+
+        self.evaluate.side_effect = new_response
+        code, output, error = self.cli([_URL, "--evaluate", "-o", str(self.directory)])
+        self.assertEqual(code, 0, error)
+        for path, contents in original.items():
+            self.assertEqual(path.read_bytes(), contents)
+        second_html = self.directory / "CLI Talk (1).evaluation.html"
+        self.assertTrue(second_html.is_file())
+        self.assertIn(str(second_html), output)
+        second_markdown = self.directory / "CLI Talk (1).evaluation.md"
+        self.assertIn(new_quote, (self.directory / "CLI Talk (1).md").read_text())
+        for path in (second_markdown, second_html):
+            document = path.read_text(encoding="utf-8")
+            self.assertIn("Version cache entries", document)
+            self.assertIn(new_quote, document)
+            self.assertNotIn("Assign cache ownership", document)
+            self.assertNotIn("Cache invalidation needs explicit ownership.", document)
+
+    def test_plain_caption_capture_does_not_run_evaluator(self):
         code, _, error = self.cli([_URL, "--captions-only", "-o", str(self.directory)])
         self.assertEqual(code, 0, error)
-        source = self.directory / "CLI Talk.md"
-        document = source.read_text()
+        document = (self.directory / "CLI Talk.md").read_text()
         self.assertIn("[00:04] Cache invalidation needs explicit ownership.", document)
         self.assertIn("YouTube captions (manual)", document)
-        self.assertNotIn("Watch-value evaluation", document)
-        self.download.assert_not_called()
-        self.audio.assert_not_called()
         self.evaluate.assert_not_called()
-
-    def test_explicit_evaluate_can_combine_with_captions_only(self):
-        self.evaluate.return_value = "## Verdict\n\nWATCH\n\n## Limits\n\nSpeech only."
-        code, _, error = self.cli([_URL, "--captions-only", "--evaluate", "-o", str(self.directory)])
-        self.assertEqual(code, 0, error)
-        self.evaluate.assert_called_once()
-        self.download.assert_not_called()
-        self.audio.assert_not_called()
-        self.assertTrue((self.directory / "CLI Talk.evaluation.html").exists())
-
-    def test_offline_html_failure_exits_nonzero_and_names_preserved_markdown(self):
-        source = self.directory / "source.md"
-        source.write_text(jot._build_transcript_markdown(
-            {"title": "Partial Talk", "channel": "Test", "duration": None}, _BODY, _URL, "manual captions",
-        ))
-        request = jot_agent.prepare_evaluation(source)
-        report = self.directory / "response.json"
-        report.write_text(json.dumps(_response(json.loads(request.read_text())["request_id"])))
-        original_write = jot_agent._write_new
-
-        def fail_html(path, text):
-            if path.suffix == ".html":
-                raise PermissionError("fixture publication denial")
-            return original_write(path, text)
-
-        with patch.object(jot_agent, "_write_new", side_effect=fail_html):
-            code, _, error = self.cli(["--publish-evaluation", str(request), "--report", str(report)])
-        markdown = self.directory / "Partial Talk.evaluation.md"
-        self.assertEqual(code, 2)
-        self.assertTrue(markdown.exists())
-        self.assertFalse(markdown.with_suffix(".html").exists())
-        self.assertIn(f"Markdown preserved at: {markdown}", error)
-        self.assertIn("fixture publication denial", error)
-        self.assert_no_providers()
-
-    def test_offline_failure_has_actionable_cause_without_provider_use(self):
-        code, _, error = self.cli(["--prepare-evaluation", str(self.directory / "missing.md")])
-        self.assertEqual(code, 2)
-        self.assertIn("Cannot prepare evaluation", error)
-        self.assertIn("missing.md", error)
-        self.assert_no_providers()
 
 
 if __name__ == "__main__":

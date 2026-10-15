@@ -1,7 +1,7 @@
-"""Offline request preparation and evidence-gated publication for host-run evaluators.
+"""Source requests, jot-owned evaluator execution, and evidence-gated publication.
 
-The host owns model execution and evaluator isolation. This module checks packet
-integrity and grounded response structure, not evaluator independence or quality.
+Fresh evaluator processes receive only the trusted protocol and source packet.
+Local checks establish structural and exact-evidence validity, not factual truth.
 """
 
 import hashlib
@@ -331,3 +331,42 @@ def publish_evaluation(request_path: Path, response_path: Path, output_dir: Path
     except OSError as exc:
         raise OSError(f"Cannot save HTML companion {html_path}: {exc}\nMarkdown preserved at: {markdown_path}") from exc
     return markdown_path, html_path
+
+
+def evaluate_transcript(
+    source: Path, background: str | None = None, output_dir: Path | None = None,
+) -> tuple[Path, Path]:
+    """Run a fresh evaluator and publish only a fully validated response.
+
+    Preserve the source and request on failure. Invalid model output never
+    becomes a report; successful request/response artifacts remain auditable.
+    """
+    from jot_evaluator import invoke_evaluator
+
+    request_path = prepare_evaluation(source, background, output_dir)
+    packet = _strict_json(request_path.read_text(encoding="utf-8"), "Request")
+    _, metadata, transcript = parse_transcript_document(packet["source_document"])
+    segments = _segments(transcript, _duration(metadata["Duration"]))
+    # Offer exact citation candidates with numeric times, avoiding model
+    # timestamp arithmetic. The original source remains the validation authority.
+    citation_lookup = [
+        {"timestamp": timestamp, "quote": line.strip()}
+        for timestamp, spans in (segments.items() if segments else [(None, [transcript])])
+        for span in spans for line in re.split(r"\r\n|\r|\n", span) if line.strip()
+    ]
+    response = invoke_evaluator(
+        {**packet, "citation_lookup": citation_lookup},
+        read_asset("evaluator-instructions.md"),
+    )
+    serialized = json.dumps(response, ensure_ascii=False, indent=2, allow_nan=False) + "\n"
+    counter = 0
+    while True:
+        suffix = f" ({counter})" if counter else ""
+        response_path = request_path.with_name(f"{request_path.stem}{suffix}.response.json")
+        try:
+            _write_new(response_path, serialized)
+        except FileExistsError:
+            counter += 1
+        else:
+            break
+    return publish_evaluation(request_path, response_path, output_dir)
