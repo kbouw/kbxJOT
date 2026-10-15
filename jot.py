@@ -2,7 +2,7 @@
 """Capture YouTube speech and publish optional watch-value evaluations.
 
 Captions retain original wording and timestamps. AssemblyAI supplies audio
-transcription when permitted; fresh Claude Code evaluation is validated before
+transcription when permitted; fresh evaluator output is validated before
 saved Markdown and self-contained HTML are published.
 """
 
@@ -18,24 +18,15 @@ from dotenv import load_dotenv
 
 from jot_html import _youtube_id
 from jot_agent import read_asset
+from jot_config import config_dir
 
 # ---------------------------------------------------------------------------
 # Constants & paths
 # ---------------------------------------------------------------------------
 
-def _config_dir() -> Path:
-    """Resolve the user .env location without creating legacy state directories."""
-    override = os.environ.get("JOT_CONFIG_DIR")
-    if override:
-        base = Path(override).expanduser()
-    else:
-        xdg = os.environ.get("XDG_CONFIG_HOME")
-        base = (Path(xdg).expanduser() / "jot") if xdg else (Path.home() / ".config" / "jot")
-    return base
-
 
 APP_DIR = Path(__file__).parent.resolve()
-CONFIG_DIR = _config_dir()
+CONFIG_DIR = config_dir()
 # .env is searched in several locations (first match wins): an explicit
 # JOT_ENV_FILE, the config dir, the current working directory, then
 # alongside source (handy for `uv run python jot.py` during development).
@@ -255,8 +246,9 @@ def _build_transcript_markdown(
 def cmd_transcribe(
     url: str, diarize: bool, skip_captions: bool, output_dir: str,
     evaluate: bool, background: str | None, captions_only: bool = False,
+    evaluator: str | None = None,
 ) -> Path | tuple[Path, Path]:
-    """Save source speech, then optionally evaluate it with fresh Claude Code.
+    """Save source speech, optionally evaluate with the selected provider.
 
     Evaluation defaults to captions only unless audio is explicitly requested.
     Plain capture retains audio fallback. Evaluation failure preserves and names
@@ -266,9 +258,11 @@ def cmd_transcribe(
         print("Error: --captions-only cannot be combined with --diarize or --skip-captions.", file=sys.stderr)
         sys.exit(1)
     if evaluate:
+        from jot_config import get_evaluator
         from jot_evaluator import find_evaluator
         try:
-            find_evaluator()
+            evaluator = get_evaluator(evaluator)
+            find_evaluator(evaluator)
         except (OSError, ValueError) as e:
             print(f"Error: Cannot start evaluation: {e}", file=sys.stderr)
             sys.exit(1)
@@ -375,9 +369,9 @@ def cmd_transcribe(
     print(f"\n{C.GREEN}Saved:{C.RESET} {output_path}")
     if evaluate:
         from jot_agent import evaluate_transcript
-        print(f"{C.DIM}Evaluating learning value with Claude Code...{C.RESET}")
+        print(f"{C.DIM}Evaluating learning value with {evaluator}...{C.RESET}")
         try:
-            markdown_path, html_path = evaluate_transcript(output_path, background, out_dir)
+            markdown_path, html_path = evaluate_transcript(output_path, background, out_dir, evaluator=evaluator)
         except (OSError, ValueError) as e:
             print(
                 f"Error: Evaluation failed: {e}\nTranscript preserved at: {output_path}",
@@ -407,19 +401,48 @@ def main() -> None:
             "  jot --agent-instructions\n"
             "  jot https://youtu.be/WkBPX-oDMnA --captions-only --evaluate\n"
             "  jot --render-html transcripts/talk.evaluation.md\n"
+            "  jot setup\n"
+            "  jot config evaluator codex\n"
         ),
     )
-    parser.add_argument("url", nargs="?", help="YouTube video URL to transcribe")
+    parser.add_argument("url", nargs="?", help="YouTube URL, or setup / config")
+    parser.add_argument("arguments", nargs="*", metavar="ARG", help="Arguments for setup / config")
     parser.add_argument("--output", "-o", help="Output directory (capture: ./transcripts; offline files: beside input)")
     parser.add_argument("--diarize", action="store_true", help="Use AssemblyAI speaker diarization")
     parser.add_argument("--skip-captions", action="store_true", help="Use AssemblyAI instead of YouTube captions")
     parser.add_argument("--captions-only", action="store_true", help="Require captions; never download audio or fall back to AssemblyAI")
-    parser.add_argument("--evaluate", action="store_true", help="Evaluate with fresh Claude Code; captions only unless --skip-captions or --diarize")
+    parser.add_argument("--evaluate", action="store_true", help="Evaluate with your selected provider; captions only unless --skip-captions or --diarize")
+    parser.add_argument("--evaluator", choices=("claude", "codex"), help="Override the saved evaluator for this evaluation")
     parser.add_argument("--background", help="What you already know or want to learn (with --evaluate)")
     parser.add_argument("--agent-instructions", action="store_true", help="Print host usage instructions; does not launch evaluation")
     parser.add_argument("--render-html", type=Path, metavar="FILE",
                         help="Render saved evaluation Markdown to portable HTML without API calls")
     args = parser.parse_args()
+    if args.url in {"setup", "config"}:
+        if any((args.evaluate, args.evaluator, args.diarize, args.skip_captions, args.captions_only,
+                args.output is not None, args.background is not None, args.agent_instructions,
+                args.render_html is not None)):
+            parser.error("setup / config cannot be combined with capture or rendering options")
+        try:
+            if args.url == "setup" and not args.arguments:
+                from jot_config import setup
+                setup()
+            elif args.url == "config" and len(args.arguments) in {1, 2} and args.arguments[0] == "evaluator":
+                from jot_config import get_evaluator, set_evaluator
+                if len(args.arguments) == 2:
+                    set_evaluator(args.arguments[1])
+                print(f"Default evaluator: {get_evaluator()}")
+            else:
+                parser.error("Use jot setup or jot config evaluator [claude|codex]")
+        except (OSError, ValueError, EOFError) as e:
+            parser.error(str(e))
+        except KeyboardInterrupt:
+            parser.exit(130, "Cancelled.\n")
+        return
+    if args.arguments:
+        parser.error("Expected one YouTube video URL")
+    if args.evaluator is not None and not args.evaluate:
+        parser.error("--evaluator requires --evaluate")
     actions = (args.url is not None, args.agent_instructions, args.render_html is not None)
     if sum(actions) > 1:
         parser.error("Choose only one action: URL, --agent-instructions, or --render-html")
@@ -461,7 +484,7 @@ def main() -> None:
     if _youtube_id(args.url) is None:
         parser.error("Expected a valid YouTube video URL")
 
-    # Captions and Claude Code use no provider .env; only audio needs it.
+    # Captions and evaluator CLI authentication use no provider .env; only audio needs it.
     audio_permitted = args.diarize or args.skip_captions or not (args.captions_only or args.evaluate)
     if audio_permitted:
         for candidate in _ENV_CANDIDATES:
@@ -479,6 +502,7 @@ def main() -> None:
         skip_captions=args.skip_captions,
         output_dir=args.output or "./transcripts",
         captions_only=args.captions_only,
+        evaluator=args.evaluator,
     )
 
 

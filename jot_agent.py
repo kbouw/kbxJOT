@@ -335,6 +335,7 @@ def publish_evaluation(request_path: Path, response_path: Path, output_dir: Path
 
 def evaluate_transcript(
     source: Path, background: str | None = None, output_dir: Path | None = None,
+    *, evaluator: str | None = None,
 ) -> tuple[Path, Path]:
     """Run a fresh evaluator and publish only a fully validated response.
 
@@ -357,6 +358,7 @@ def evaluate_transcript(
     response = invoke_evaluator(
         {**packet, "citation_lookup": citation_lookup},
         read_asset("evaluator-instructions.md"),
+        evaluator=evaluator,
     )
     serialized = json.dumps(response, ensure_ascii=False, indent=2, allow_nan=False) + "\n"
     counter = 0

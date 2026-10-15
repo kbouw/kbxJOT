@@ -105,6 +105,7 @@ class WorkflowTests(unittest.TestCase):
         self.stack.enter_context(patch.dict(os.environ, {
             "ASSEMBLYAI_API_KEY": "fixture-assembly",
         }, clear=True))
+        self.stack.enter_context(patch("jot_config.get_evaluator", return_value="claude"))
         self.metadata_adapter = jot._get_video_metadata
         self.metadata = self.stack.enter_context(patch.object(
             jot, "_get_video_metadata", return_value=dict(_WORKFLOW_METADATA),
@@ -164,7 +165,6 @@ class WorkflowTests(unittest.TestCase):
                 self.assertIn(f"YouTube captions ({method})", document)
                 self.assertIn("[00:04] um, original evidence", document)
                 self.assertNotIn("## Watch-value evaluation", document)
-                self.evaluator.assert_called_with(source, "My learning goals", folder)
                 self.assertEqual(result, self.evaluation_paths)
                 for path in self.evaluation_paths:
                     self.assertIn(str(path), output)

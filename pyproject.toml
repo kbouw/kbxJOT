@@ -1,7 +1,7 @@
 [project]
 name = "jot"
 version = "0.1.0"
-description = "YouTube transcripts and validated HTML watch pages with jot-controlled Claude Code evaluation."
+description = "YouTube transcripts and validated HTML watch pages with jot-controlled evaluation."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
@@ -30,6 +30,7 @@ only-include = [
     "jot_agent.py",
     "jot_evaluator.py",
     "jot_evaluator_windows.py",
+    "jot_config.py",
     "jot_assets/agent-workflow.md",
     "jot_assets/evaluator-instructions.md",
     "jot_assets/evaluation-rubric.md",
@@ -49,6 +50,7 @@ only-include = [
     "jot_agent.py",
     "jot_evaluator.py",
     "jot_evaluator_windows.py",
+    "jot_config.py",
     "jot_assets/agent-workflow.md",
     "jot_assets/evaluator-instructions.md",
     "jot_assets/evaluation-rubric.md",

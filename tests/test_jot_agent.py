@@ -550,13 +550,14 @@ class AgentCLITests(unittest.TestCase):
         self.addCleanup(self.stack.close)
         self.directory = Path(self.stack.enter_context(tempfile.TemporaryDirectory())).resolve()
         self.stack.enter_context(patch.dict(os.environ, {"ASSEMBLYAI_API_KEY": "configured"}, clear=True))
+        self.stack.enter_context(patch("jot_config.get_evaluator", return_value="claude"))
         self.env = self.stack.enter_context(patch.object(jot, "load_dotenv"))
         self.download = self.stack.enter_context(patch.object(jot, "_download_audio"))
         self.audio = self.stack.enter_context(patch.object(jot, "_transcribe_assemblyai"))
         self.stack.enter_context(patch("jot_evaluator.find_evaluator", return_value="/fixture/claude"))
         self.evaluate = self.stack.enter_context(patch(
             "jot_evaluator.invoke_evaluator",
-            side_effect=lambda packet, instructions: _response(packet["request_id"]),
+            side_effect=lambda packet, instructions, **kwargs: _response(packet["request_id"]),
         ))
         self.metadata = self.stack.enter_context(patch.object(jot, "_get_video_metadata", return_value={
             "title": "CLI Talk", "channel": "Test Channel", "duration": 20,
@@ -590,7 +591,7 @@ class AgentCLITests(unittest.TestCase):
         self.audio.assert_not_called()
 
     def test_invalid_evaluator_evidence_cannot_be_published(self):
-        def invalid_response(packet, instructions):
+        def invalid_response(packet, instructions, **kwargs):
             return _response(packet["request_id"], quote="This quote is not in the video.")
 
         self.evaluate.side_effect = invalid_response
@@ -639,7 +640,7 @@ class AgentCLITests(unittest.TestCase):
             "segments": [{"start": 4, "text": new_quote}],
         }
 
-        def new_response(packet, instructions):
+        def new_response(packet, instructions, **kwargs):
             response = _response(packet["request_id"], quote=new_quote)
             response["takeaways"][0]["idea"] = "Version cache entries"
             return response
