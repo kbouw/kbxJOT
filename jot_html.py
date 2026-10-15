@@ -576,8 +576,8 @@ _JS = r"""
     const quoted = windows
       ? "'" + path.replace(/['\u2018-\u201b]/g, quote => quote + quote) + "'"
       : "'" + path.replace(/'/g, "'\\''") + "'";
-    document.getElementById('viewer-shell').textContent = windows ? 'PowerShell: ' : 'POSIX shell: ';
-    document.getElementById('viewer-command').textContent = 'jot open ' + quoted;
+    document.getElementById('viewer-shell').textContent = windows ? 'PowerShell (from the jot checkout): ' : 'POSIX shell (from the jot checkout): ';
+    document.getElementById('viewer-command').textContent = 'uv run jot open ' + quoted;
     status.textContent = 'Timestamp links open YouTube in this reading copy.';
   }
   let selected = null;
@@ -729,7 +729,7 @@ def build_evaluation_html(document: str) -> str:
 <div class="layout">
 <aside class="video-pane" aria-label="Video and report information">
 <p class="video-title">Watch alongside the notes</p>
-<div class="video-frame"><iframe id="video-player" data-video-id="{video_id}" hidden title="YouTube video player" allow="accelerometer; autoplay; clipboard-write; encrypted-media; picture-in-picture; web-share" allowfullscreen referrerpolicy="strict-origin-when-cross-origin"></iframe><p id="local-player-info" class="local-player-info">To play video here, open report in local viewer:<br><span id="viewer-shell">POSIX shell: </span><code id="viewer-command">jot open 'report.html'</code><br>Keep terminal running while watching.</p></div>
+<div class="video-frame"><iframe id="video-player" data-video-id="{video_id}" hidden title="YouTube video player" allow="accelerometer; autoplay; clipboard-write; encrypted-media; picture-in-picture; web-share" allowfullscreen referrerpolicy="strict-origin-when-cross-origin"></iframe><p id="local-player-info" class="local-player-info">To play video here, open report in local viewer:<br><span id="viewer-shell">POSIX shell (from the jot checkout): </span><code id="viewer-command">uv run jot open 'report.html'</code><br>Keep terminal running while watching.</p></div>
 <p id="player-status" class="player-status" role="status" aria-live="polite" aria-atomic="true">Choose a timestamp to request that moment in the video.</p>
 <p id="playback-note" class="playback-note">Reading works offline. Video playback needs internet and the local HTTP viewer; use the direct YouTube link if embedding is unavailable.</p>
 <a class="direct-link" href="{watch_url}" rel="noopener noreferrer">Open directly on YouTube ↗</a>
