@@ -4,6 +4,8 @@ from contextlib import ExitStack
 import json
 import os
 from pathlib import Path
+import signal
+import subprocess
 import sys
 import tempfile
 import time
@@ -69,10 +71,23 @@ if MODE == "nonzero":
     print(packet["source_document"], file=sys.stderr)
     print("private-auth-diagnostic", file=sys.stderr)
     sys.exit(7)
-if MODE == "timeout":
-    # The descendant inherits the output pipes. Timeout cleanup must not leave
-    # a CLI helper running or wait for its thirty-second sleep to finish.
-    subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+if MODE in ("timeout", "orphan", "large_stdout", "large_stderr"):
+    # Record both processes so tests can assert cleanup and remove any regression leaks.
+    helper = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    Path(CLI_PID_FILE).write_text(str(os.getpid()), encoding="ascii")
+    Path(HELPER_PID_FILE + ".tmp").write_text(str(helper.pid), encoding="ascii")
+    Path(HELPER_PID_FILE + ".tmp").replace(HELPER_PID_FILE)
+    if MODE == "orphan":
+        sys.exit(0)
+    if MODE.startswith("large_"):
+        emit({"would_be_response": True})
+        sys.stdout.flush()
+        stream = sys.stdout.buffer if MODE == "large_stdout" else sys.stderr.buffer
+        stream.write(
+            packet["source_document"].encode("utf-8")
+            + b"private-auth-diagnostic disposable-test-auth\n" + b"x" * 65536
+        )
+        stream.flush()
     time.sleep(30)
 if MODE == "raw":
     sys.stdout.write(PAYLOAD)
@@ -123,6 +138,9 @@ class EvaluatorRuntimeTests(unittest.TestCase):
                 "type": "object", "additionalProperties": True,
             },
         }
+        self.helper_pid_file = self.directory / "helper.pid"
+        self.cli_pid_file = self.directory / "cli.pid"
+        self.addCleanup(self.cleanup_processes)
         self.install_cli()
 
     def install_cli(self, mode="success", payload=""):
@@ -130,6 +148,8 @@ class EvaluatorRuntimeTests(unittest.TestCase):
             f"MODE = {mode!r}\nPAYLOAD = {payload!r}\n"
             f"SESSION_MARKERS = {_SESSION_MARKERS!r}\n"
             f"CONFIG_DIRECTORY = {self.environment['CLAUDE_CONFIG_DIR']!r}\n"
+            f"HELPER_PID_FILE = {str(self.helper_pid_file)!r}\n"
+            f"CLI_PID_FILE = {str(self.cli_pid_file)!r}\n"
         )
         self.executable.write_text(
             f"#!{sys.executable}\n" + configuration + _CLI_FIXTURE,
@@ -148,6 +168,43 @@ class EvaluatorRuntimeTests(unittest.TestCase):
         self.assertNotIn("private-auth-diagnostic", diagnostic)
         self.assertNotIn("disposable-test-auth", diagnostic)
         return raised.exception
+
+    def cleanup_processes(self):
+        if self.cli_pid_file.exists():
+            try:
+                os.killpg(int(self.cli_pid_file.read_text(encoding="ascii")), signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        if self.helper_pid_file.exists():
+            try:
+                os.kill(int(self.helper_pid_file.read_text(encoding="ascii")), signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+    def wait_for_helper(self):
+        deadline = time.monotonic() + 5
+        while not self.helper_pid_file.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertTrue(self.helper_pid_file.exists(), "CLI must record the helper PID")
+        return int(self.helper_pid_file.read_text(encoding="ascii"))
+
+    def assert_helper_exits(self):
+        pid = self.wait_for_helper()
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                return
+            # Orphaned zombies may await reaping by a container's init process.
+            status = subprocess.run(
+                ["/bin/ps", "-o", "stat=", "-p", str(pid)],
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+            ).stdout.strip()
+            if status.startswith(b"Z"):
+                return
+            time.sleep(0.01)
+        self.fail(f"Evaluator helper {pid} is still running after cleanup")
 
     def test_source_and_background_stay_out_of_process_arguments(self):
         # Larger than a typical argv limit, and includes non-ASCII source bytes.
@@ -195,12 +252,84 @@ class EvaluatorRuntimeTests(unittest.TestCase):
         self.install_cli("nonzero")
         self.assert_rejected("exit status 7")
 
-    def test_timeout_is_bounded_even_when_descendant_inherits_output_pipes(self):
+    def test_timeout_kills_helper_even_after_cli_exits_with_inherited_pipes(self):
+        for mode in ("timeout", "orphan"):
+            with self.subTest(mode=mode):
+                self.install_cli(mode)
+                started = time.monotonic()
+                with patch.object(jot_evaluator, "_TIMEOUT_SECONDS", 0.75):
+                    self.assert_rejected("timed out after 0.75 seconds")
+                self.assertLess(time.monotonic() - started, 3)
+                self.assert_helper_exits()
+                self.cleanup_processes()
+                self.helper_pid_file.unlink()
+                self.cli_pid_file.unlink()
+
+    def test_ctrl_c_preserves_keyboard_interrupt_and_kills_helper(self):
         self.install_cli("timeout")
-        started = time.monotonic()
-        with patch.object(jot_evaluator, "_TIMEOUT_SECONDS", 0.25):
-            self.assert_rejected("timed out after 0.25 seconds")
-        self.assertLess(time.monotonic() - started, 3)
+        driver_code = (
+            "import json, sys, jot_evaluator\n"
+            "packet = json.load(sys.stdin)\n"
+            "try:\n"
+            "    jot_evaluator.invoke_evaluator(packet, 'trusted test instructions')\n"
+            "except KeyboardInterrupt:\n"
+            "    sys.exit(130)\n"
+        )
+        with subprocess.Popen(
+            [sys.executable, "-c", driver_code],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            cwd=Path(jot_evaluator.__file__).parent,
+            start_new_session=True,
+        ) as driver:
+            try:
+                driver.stdin.write(json.dumps(self.packet).encode("utf-8"))
+                driver.stdin.close()
+                self.wait_for_helper()
+                os.kill(driver.pid, signal.SIGINT)
+                self.assertEqual(driver.wait(timeout=3), 130)
+                self.assertEqual(driver.stdout.read(), b"")
+                self.assertEqual(driver.stderr.read(), b"")
+                self.assert_helper_exits()
+            finally:
+                if driver.poll() is None:
+                    driver.kill()
+
+    def test_unexpected_exception_preserves_identity_and_kills_helper(self):
+        self.install_cli("timeout")
+        failure = RuntimeError("unexpected evaluator exchange failure")
+
+        def fail_after_spawn(*args, **kwargs):
+            self.wait_for_helper()
+            raise failure
+
+        with patch.object(jot_evaluator.queue.Queue, "get", side_effect=fail_after_spawn):
+            with self.assertRaises(RuntimeError) as raised:
+                self.invoke()
+        self.assertIs(raised.exception, failure)
+        self.assert_helper_exits()
+
+    def test_oversized_stdout_and_stderr_reject_without_exposing_secrets(self):
+        for stream in ("stdout", "stderr"):
+            with self.subTest(stream=stream):
+                self.install_cli(f"large_{stream}")
+                started = time.monotonic()
+                with patch.object(jot_evaluator, "_MAX_OUTPUT_BYTES", 4096):
+                    self.assert_rejected(f"exceeded the {stream} limit of 4096 bytes")
+                self.assertLess(time.monotonic() - started, 3)
+                self.assert_helper_exits()
+                self.cleanup_processes()
+                self.helper_pid_file.unlink()
+                self.cli_pid_file.unlink()
+
+    def test_stdout_at_exact_byte_limit_is_accepted(self):
+        envelope = {
+            "type": "result", "subtype": "success", "is_error": False,
+            "structured_output": {"accepted": True},
+        }
+        payload = json.dumps(envelope)
+        self.install_cli("raw", payload)
+        with patch.object(jot_evaluator, "_MAX_OUTPUT_BYTES", len(payload.encode("utf-8"))):
+            self.assertEqual(self.invoke(), {"accepted": True})
 
     def test_error_or_incomplete_envelopes_never_return_a_response(self):
         success = {"type": "result", "subtype": "success", "is_error": False,
@@ -250,6 +379,53 @@ class EvaluatorRuntimeTests(unittest.TestCase):
     def test_invalid_utf8_output_is_rejected(self):
         self.install_cli("invalid_utf8")
         self.assert_rejected("returned invalid JSON")
+
+
+@unittest.skipUnless(os.name == "nt", "Native Windows Job Object regression")
+class WindowsEvaluatorContainmentTests(unittest.TestCase):
+    def test_timeout_kills_helper_after_cli_and_launcher_exit(self):
+        import ctypes
+        from ctypes import wintypes
+
+        with tempfile.TemporaryDirectory() as directory:
+            pid_file = Path(directory) / "helper.pid"
+            helper_code = (
+                "import os, time\n"
+                "from pathlib import Path\n"
+                f"Path({str(pid_file)!r}).write_text(str(os.getpid()), encoding='ascii')\n"
+                "time.sleep(30)\n"
+            )
+            cli_code = (
+                "import subprocess, sys, time\n"
+                "from pathlib import Path\n"
+                f"subprocess.Popen([sys.executable, '-c', {helper_code!r}])\n"
+                f"while not Path({str(pid_file)!r}).exists(): time.sleep(0.01)\n"
+            )
+            with patch.object(jot_evaluator, "_TIMEOUT_SECONDS", 1):
+                with self.assertRaises(subprocess.TimeoutExpired):
+                    jot_evaluator._run_evaluator(
+                        [sys.executable, "-c", cli_code], b"{}\n", directory, os.environ.copy(),
+                    )
+            self.assertTrue(pid_file.exists(), "CLI must have started its helper")
+            pid = int(pid_file.read_text(encoding="ascii"))
+            kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+            kernel.OpenProcess.restype = wintypes.HANDLE
+            kernel.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+            kernel.WaitForSingleObject.restype = wintypes.DWORD
+            kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+            kernel.CloseHandle.restype = wintypes.BOOL
+            handle = kernel.OpenProcess(0x00100000, False, pid)  # SYNCHRONIZE
+            if not handle:
+                self.assertEqual(ctypes.get_last_error(), 87)  # ERROR_INVALID_PARAMETER: gone
+            else:
+                try:
+                    self.assertEqual(
+                        kernel.WaitForSingleObject(handle, 2000), 0,
+                        "Job cleanup must terminate the orphaned helper",
+                    )
+                finally:
+                    kernel.CloseHandle(handle)
 
 
 if __name__ == "__main__":

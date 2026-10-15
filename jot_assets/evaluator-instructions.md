@@ -25,6 +25,6 @@ The invocation also supplies `citation_lookup`, derived directly from the source
 - `novelty.personal` must be unknown when viewer background is absent or blank. Do not claim independent world-level novelty verification.
 - Assess substance, stories, analogies, repetition, marketing, and housekeeping separately. Every observed rating needs evidence. A not_observed category may have an empty evidence array. Useful stories and analogies are not automatically fluff.
 - Worth-watching and skippable ranges may be empty. Do not invent ranges to fill an array or justify a verdict.
-- Include speech-only assessment and lack of independent fact checking in limits. Slides, demonstrations, visuals, delivery, and audio quality are not observed from transcript text alone.
+- Use `limits` for source-specific or assessment-specific limitations such as transcript gaps, uncertain transcription, or missing context. An empty array is valid when there are no additional limitations. Do not repeat the fixed speech-only, no-independent-fact-checking, or validation caveats: jot appends those to every report. Slides, demonstrations, visuals, delivery, and audio quality are not observed from transcript text alone.
 
 jot checks response structure, request identity, exact quotes, timestamps, novelty constraints, and ranges. Passing those checks does not establish factual truth, semantic quality, or complete reading. Make the assessment honestly rather than optimizing to pass validation.

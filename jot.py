@@ -321,7 +321,7 @@ def cmd_transcribe(
     # Path B: AssemblyAI. Configuration is checked before any audio download.
     if not transcript_body:
         if captions_only:
-            print(f"Error: --captions-only stopped: {caption_failure} No audio fallback permitted.", file=sys.stderr)
+            print(f"Error: Captions required: {caption_failure} No audio fallback permitted.", file=sys.stderr)
             sys.exit(1)
         if not os.environ.get("ASSEMBLYAI_API_KEY"):
             print("Error: ASSEMBLYAI_API_KEY is required for audio transcription.", file=sys.stderr)

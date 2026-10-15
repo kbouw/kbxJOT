@@ -330,10 +330,9 @@ class AgentWorkflowTests(unittest.TestCase):
         markdown, _ = self.publish()
         self.assertIn("Substantive explanation: HIGH", markdown.read_text())
 
-    def test_empty_limits_blank_text_multiline_and_extra_fields_fail_shape_gate(self):
+    def test_blank_text_multiline_and_extra_fields_fail_shape_gate(self):
         original = copy.deepcopy(self.response)
         mutations = (
-            lambda value: value.update(limits=[]),
             lambda value: value["verdict"].update(reason=" \t"),
             lambda value: value["verdict"].update(reason="first\n## Transcript"),
             lambda value: value["verdict"].update(reason="first\rsecond"),
@@ -353,6 +352,14 @@ class AgentWorkflowTests(unittest.TestCase):
         self.response["verdict"]["decision"] = "SKIP"
         markdown, _ = self.publish()
         self.assertIn("No substantive takeaways identified", markdown.read_text())
+
+    def test_empty_source_limits_retain_fixed_safety_caveats(self):
+        self.response["limits"] = []
+        markdown, html = self.publish()
+        for path in (markdown, html):
+            document = path.read_text(encoding="utf-8")
+            self.assertIn("Speech-only assessment", document)
+            self.assertIn("No independent fact checking", document)
 
     def test_narrative_cannot_create_links_html_or_envelope_headings(self):
         attack = '[click](https://evil.invalid) <script>alert(1)</script> ## Transcript **bold** https://plain.invalid 99:59'
@@ -604,25 +611,40 @@ class AgentCLITests(unittest.TestCase):
         self.assertEqual(list(self.directory.glob("*.evaluation.*")), [])
 
     def test_evaluation_caption_failure_never_uses_paid_audio_or_evaluator(self):
-        for captions, failure in (
-            (None, None),
-            ({"method": "captions", "segments": [{"start": 0, "text": " "}]}, None),
-            (None, RuntimeError("fixture blocked captions")),
+        for captions, failure, cause in (
+            (None, None, "No English captions"),
+            ({"method": "captions", "segments": [{"start": 0, "text": " "}]}, None, "no speech"),
+            (None, RuntimeError("fixture blocked captions"), "fixture blocked captions"),
         ):
             with self.subTest(captions=captions, failure=failure):
                 self.captions.return_value = captions
                 self.captions.side_effect = failure
-                code, _, _ = self.cli([_URL, "--evaluate", "-o", str(self.directory)])
+                code, _, error = self.cli([_URL, "--evaluate", "-o", str(self.directory)])
                 self.assertEqual(code, 1)
+                self.assertIn(cause, error)
+                self.assertNotIn("--captions-only", error)
+                self.assertIn("No audio fallback", error)
                 self.download.assert_not_called()
                 self.audio.assert_not_called()
                 self.evaluate.assert_not_called()
                 self.assertEqual(list(self.directory.iterdir()), [])
 
-    def test_repeated_evaluation_preserves_existing_sources_and_reports(self):
+    def test_repeated_evaluation_reports_new_capture_and_preserves_existing_files(self):
         code, _, error = self.cli([_URL, "--evaluate", "-o", str(self.directory)])
         self.assertEqual(code, 0, error)
         original = {path: path.read_bytes() for path in self.directory.iterdir()}
+        new_quote = "Version cache entries before publishing updates."
+        self.captions.return_value = {
+            "method": "YouTube captions (manual)",
+            "segments": [{"start": 4, "text": new_quote}],
+        }
+
+        def new_response(packet, instructions):
+            response = _response(packet["request_id"], quote=new_quote)
+            response["takeaways"][0]["idea"] = "Version cache entries"
+            return response
+
+        self.evaluate.side_effect = new_response
         code, output, error = self.cli([_URL, "--evaluate", "-o", str(self.directory)])
         self.assertEqual(code, 0, error)
         for path, contents in original.items():
@@ -630,6 +652,14 @@ class AgentCLITests(unittest.TestCase):
         second_html = self.directory / "CLI Talk (1).evaluation.html"
         self.assertTrue(second_html.is_file())
         self.assertIn(str(second_html), output)
+        second_markdown = self.directory / "CLI Talk (1).evaluation.md"
+        self.assertIn(new_quote, (self.directory / "CLI Talk (1).md").read_text())
+        for path in (second_markdown, second_html):
+            document = path.read_text(encoding="utf-8")
+            self.assertIn("Version cache entries", document)
+            self.assertIn(new_quote, document)
+            self.assertNotIn("Assign cache ownership", document)
+            self.assertNotIn("Cache invalidation needs explicit ownership.", document)
 
     def test_plain_caption_capture_does_not_run_evaluator(self):
         code, _, error = self.cli([_URL, "--captions-only", "-o", str(self.directory)])

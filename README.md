@@ -46,12 +46,15 @@ uv run jot 'YOUTUBE_URL' --captions-only --evaluate
 
 jot prints the actual saved HTML path. Transcripts and evaluation artifacts stay in `./transcripts` by default; `-o DIR` changes the destination. You do not need to handle request packets or response JSON.
 
+Evaluation alone can take up to 10 minutes, in addition to caption capture. Allow at least 15 minutes when running jot through an assistant or command runner, and wait for its success path or diagnostic rather than cancelling a slow evaluation.
+
 ## Use the result
 
 Open the delivered `.evaluation.html` file in a modern browser. Share the HTML file alone: no companion assets, keys, or server are needed for reading. A remote assistant must provide a downloadable file, not a path on its own machine.
 
 - **English captions unavailable?** The default evaluation workflow stops, even when captions exist in another language. It never silently downloads audio or uses paid transcription.
 - **Evaluator or validation failure?** jot stops without publishing a report. The saved transcript remains available. There is no fallback to host-assistant self-evaluation or automatic retry.
+- **Timeout, interruption, or excessive evaluator output?** jot stops the evaluator process tree without publishing a report. Evaluation has a 10-minute deadline and an 8 MiB limit on each output stream.
 - **Reading works offline; playback needs internet.** If the embedded video is blocked, use the page's direct YouTube link.
 
 The evaluator runs in a fresh noninteractive process with customizations, tools, and MCP disabled, without your host conversation. Local validation checks response structure, exact source quotes, timestamps, and ranges—not factual truth, semantic quality, or complete model reading. Assessments are speech-only; check important claims against the transcript.

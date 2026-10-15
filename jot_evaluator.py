@@ -3,15 +3,21 @@
 import json
 import os
 from pathlib import Path
+import queue
 import shutil
 import signal
 import subprocess
 import tempfile
+import sys
+import threading
+import time
 
 from jot_agent import _strict_json
 
 
 _TIMEOUT_SECONDS = 600
+_MAX_OUTPUT_BYTES = 8 * 1024 * 1024
+_READ_CHUNK_BYTES = 64 * 1024
 # Session and IDE coordinates must not connect the evaluator to its caller.
 # Authentication, model selection, and other legitimate CLI configuration stay intact.
 _SESSION_ENV_VARS = frozenset({
@@ -34,6 +40,129 @@ def find_evaluator() -> str:
         )
     # PATH can contain relative entries; the child runs outside the caller's directory.
     return str(Path(executable).resolve())
+
+
+def _run_evaluator(command, request, directory, environment):
+    """Exchange one request with a contained process, with bounded output and lifetime.
+
+    communicate() buffers both output streams without a size limit. Dedicated
+    pipe workers also work on Windows, where selectors cannot watch these pipes.
+    Only stdout is retained; stderr is counted and discarded.
+    """
+    job = None
+    process = None
+    workers = []
+    primary_error = None
+    completed = queue.Queue(maxsize=3)
+    stdout = bytearray()
+    deadline = time.monotonic() + _TIMEOUT_SECONDS
+
+    def write_request():
+        try:
+            if job is not None:
+                # The Windows launcher cannot spawn Claude until job assignment.
+                process.stdin.write(b"\0")
+                process.stdin.flush()
+            process.stdin.write(request)
+            process.stdin.close()
+        except BrokenPipeError:
+            # Early CLI exit is diagnosed using its status/output, not source text.
+            completed.put(None)
+        except BaseException as exc:
+            completed.put(exc)
+        else:
+            completed.put(None)
+
+    def read_output(stream, name):
+        try:
+            size = 0
+            while True:
+                chunk = stream.read1(_READ_CHUNK_BYTES)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > _MAX_OUTPUT_BYTES:
+                    raise ValueError(
+                        f"Claude Code evaluation exceeded the {name} limit of "
+                        f"{_MAX_OUTPUT_BYTES} bytes; no evaluation was accepted."
+                    )
+                if name == "stdout":
+                    stdout.extend(chunk)
+        except BaseException as exc:
+            completed.put(exc)
+        else:
+            completed.put(None)
+
+    try:
+        if os.name == "nt":
+            from jot_evaluator_windows import WindowsJob
+
+            job = WindowsJob()
+            # A stdlib launcher waits for one byte before it creates the CLI.
+            # Assigning the launcher to the job first closes the spawn/assign race.
+            launcher = (
+                "import os, subprocess, sys\n"
+                "if os.read(0, 1) != b'\\0': sys.exit(125)\n"
+                "sys.exit(subprocess.call(sys.argv[1:]))\n"
+            )
+            command = [sys.executable, "-c", launcher, *command]
+        process = subprocess.Popen(
+            command,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            cwd=directory,
+            env=environment,
+            start_new_session=os.name == "posix",
+        )
+        if job is not None:
+            job.assign(process.pid)
+        for target, args in (
+            (write_request, ()),
+            (read_output, (process.stdout, "stdout")),
+            (read_output, (process.stderr, "stderr")),
+        ):
+            worker = threading.Thread(target=target, args=args, daemon=True)
+            worker.start()
+            workers.append(worker)
+        for _ in workers:
+            try:
+                error = completed.get(timeout=max(0, deadline - time.monotonic()))
+            except queue.Empty:
+                raise subprocess.TimeoutExpired(command, _TIMEOUT_SECONDS) from None
+            if error is not None:
+                raise error
+        process.wait(timeout=max(0, deadline - time.monotonic()))
+        return stdout, process.returncode
+    except BaseException as exc:
+        primary_error = exc
+        raise
+    finally:
+        try:
+            # Cleanup is unconditional, including Ctrl-C and unexpected exceptions.
+            # Do not poll the root before killing: it may have left helpers behind.
+            if job is not None:
+                job.close()
+            elif process is not None:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            if process is not None:
+                # Closing an unreleased Windows gate also handles assignment failure.
+                try:
+                    process.stdin.close()
+                except BrokenPipeError:
+                    pass
+                process.wait()
+                for worker in workers:
+                    worker.join()
+                process.stdout.close()
+                process.stderr.close()
+        except BaseException as cleanup_error:
+            if primary_error is not None:
+                raise primary_error from cleanup_error
+            raise
 
 
 def invoke_evaluator(packet: dict, instructions: str) -> dict:
@@ -77,32 +206,12 @@ def invoke_evaluator(packet: dict, instructions: str) -> dict:
     environment = {key: value for key, value in os.environ.items() if key not in _SESSION_ENV_VARS}
     try:
         with tempfile.TemporaryDirectory(prefix="jot-evaluator-") as directory:
-            with subprocess.Popen(
-                command,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                cwd=directory,
-                env=environment,
-                start_new_session=os.name == "posix",
-            ) as process:
-                try:
-                    stdout, _ = process.communicate(request, timeout=_TIMEOUT_SECONDS)
-                except subprocess.TimeoutExpired:
-                    # Kill descendants too: an inherited output pipe must not keep
-                    # timeout cleanup waiting after the CLI itself has exited.
-                    if os.name == "posix":
-                        try:
-                            os.killpg(process.pid, signal.SIGKILL)
-                        except ProcessLookupError:
-                            pass
-                    else:
-                        process.kill()
-                    raise ValueError(
-                        f"Claude Code evaluation timed out after {_TIMEOUT_SECONDS:g} seconds. "
-                        "Check your connection and Claude Code authentication before trying again."
-                    ) from None
-                returncode = process.returncode
+            stdout, returncode = _run_evaluator(command, request, directory, environment)
+    except subprocess.TimeoutExpired:
+        raise ValueError(
+            f"Claude Code evaluation timed out after {_TIMEOUT_SECONDS:g} seconds. "
+            "Check your connection and Claude Code authentication before trying again."
+        ) from None
     except FileNotFoundError:
         raise ValueError(
             "The Claude Code executable became unavailable. Reinstall it or correct PATH, "

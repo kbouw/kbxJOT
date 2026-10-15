@@ -228,15 +228,6 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(len(list(self.directory.glob("*.md"))), 2)
         self.assertEqual(list(self.directory.glob("*.html")), [])
 
-    def test_source_collision_preserves_previous_capture_and_passes_actual_new_path(self):
-        existing = self.directory / "Workflow Talk.md"
-        existing.write_text("Previous capture")
-        code, output, error, result = self.run_command(evaluate=True)
-        self.assertEqual(code, 0, error)
-        source = self.directory / "Workflow Talk (1).md"
-        self.assertEqual(existing.read_text(), "Previous capture")
-        self.assertIn("[00:04]", source.read_text())
-
     def test_plain_capture_returns_source_without_evaluator(self):
         code, output, error, result = self.run_command(captions_only=True)
         self.assertEqual(code, 0, error)
@@ -310,6 +301,7 @@ class WorkflowTests(unittest.TestCase):
 
     def test_empty_audio_results_do_not_publish_or_evaluate(self):
         results = (
+            {"text": None, "words": []},
             {"text": ""},
             {"text": "   "},
             {"text": " ", "words": [{"text": " ", "start": 0, "end": 100}]},
@@ -323,6 +315,8 @@ class WorkflowTests(unittest.TestCase):
                 )
                 self.assertEqual(code, 1)
                 self.assertEqual(list(self.directory.iterdir()), [])
+                self.assertIn("No transcript speech", error)
+                self.assertIsNone(saved)
                 self.evaluator.assert_not_called()
 
     def test_missing_audio_key_stops_before_download(self):
