@@ -517,6 +517,7 @@ _CSS = """
 .report-section+.report-section{border-top:1px solid var(--line);margin-top:40px;padding-top:36px}.evaluation .report-section>:first-child{margin-top:0}.accordion{border:1px solid var(--line);border-radius:var(--radius)}.accordion-body{padding:22px 20px 2px}.evaluation .takeaway{display:block;margin-bottom:6px}.level{display:inline-block;color:var(--ink);background:var(--bg);border:1px solid var(--ink);border-radius:var(--radius);padding:0 9px;font-size:12px;font-weight:700;line-height:22px;letter-spacing:.08em;text-transform:uppercase;vertical-align:.12em;white-space:nowrap}.level-high{background:var(--ink);color:var(--bg)}.level-moderate{border-style:solid;box-shadow:inset 0 0 0 1px var(--ink)}.level-low{border-style:dashed}
 .signal-heading{display:block;margin-bottom:6px}
 .video-frame iframe[hidden]{display:none}.local-player-info{margin:0;padding:28px 24px;font-size:16px;line-height:1.6}.local-player-info code{font-size:14px;overflow-wrap:anywhere}
+.video-frame.local-reading{aspect-ratio:auto}
 @media(min-width:1100px){.evaluation .timestamp{min-height:26px}}@media(max-width:1000px){.layout{gap:36px;grid-template-columns:minmax(250px,340px) minmax(0,1fr)}.page{padding:40px 24px 60px}}@media(max-width:760px){.topbar{padding:12px 20px}.page{padding:32px 20px 48px}.hero{padding-bottom:28px;margin-bottom:28px}.layout{display:flex;flex-direction:column;gap:36px}.video-pane{position:static;width:100%;scroll-margin-top:16px}.video-frame{max-width:640px}.metadata{margin-top:16px}.section-nav{padding-top:8px}.report{width:100%}.report>h2{font-size:28px}.evaluation h3{font-size:25px}.evaluation h4{font-size:22px}.timestamp{min-height:32px;line-height:32px}.footer{flex-direction:column;gap:12px}.transcript-text{padding:18px 14px}}
 @media(max-width:760px),(pointer:coarse){a{min-width:44px;min-height:44px;display:inline-block}.evaluation .timestamp,.transcript-text .timestamp,.timestamp{min-height:44px;line-height:44px}}
 @media(max-width:760px),(pointer:coarse){.theme-toggle{min-height:44px}.section-nav a{min-height:44px}}
@@ -552,7 +553,7 @@ _THEME_JS = """
 })();
 """
 
-_JS = """
+_JS = r"""
 (() => {
   const frame = document.getElementById('video-player');
   const status = document.getElementById('player-status');
@@ -563,7 +564,20 @@ _JS = """
     frame.hidden = false;
     localInfo.hidden = true;
   } else {
-    document.getElementById('viewer-command').textContent = 'jot open "' + decodeURIComponent(location.pathname.split('/').pop() || 'report.html') + '"';
+    frame.parentElement.classList.add('local-reading');
+    let path = decodeURIComponent(location.pathname);
+    const windowsDrive = /^\/[a-z]:\//i.test(path);
+    const windows = windowsDrive || Boolean(location.hostname);
+    if (location.hostname) {
+      path = '\\\\' + location.hostname + path.replace(/\//g, '\\');
+    } else if (windowsDrive) {
+      path = path.slice(1).replace(/\//g, '\\');
+    }
+    const quoted = windows
+      ? "'" + path.replace(/['\u2018-\u201b]/g, quote => quote + quote) + "'"
+      : "'" + path.replace(/'/g, "'\\''") + "'";
+    document.getElementById('viewer-shell').textContent = windows ? 'PowerShell: ' : 'POSIX shell: ';
+    document.getElementById('viewer-command').textContent = 'jot open ' + quoted;
     status.textContent = 'Timestamp links open YouTube in this reading copy.';
   }
   let selected = null;
@@ -571,7 +585,7 @@ _JS = """
     const target = event.target instanceof Element ? event.target.closest('a[data-start]') : null;
     if (!target || event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
     const seconds = target.dataset.start;
-    if (!playable || !frame || !/^\\d+$/.test(seconds)) return;
+    if (!playable || !frame || !/^\d+$/.test(seconds)) return;
     event.preventDefault();
     const url = new URL('https://www.youtube.com/embed/' + frame.dataset.videoId);
     url.searchParams.set('start', seconds);
@@ -715,7 +729,7 @@ def build_evaluation_html(document: str) -> str:
 <div class="layout">
 <aside class="video-pane" aria-label="Video and report information">
 <p class="video-title">Watch alongside the notes</p>
-<div class="video-frame"><iframe id="video-player" data-video-id="{video_id}" hidden title="YouTube video player" allow="accelerometer; autoplay; clipboard-write; encrypted-media; picture-in-picture; web-share" allowfullscreen referrerpolicy="strict-origin-when-cross-origin"></iframe><p id="local-player-info" class="local-player-info">To play the video here, open this report in the local viewer:<br><code id="viewer-command">jot open "report.html"</code><br>Keep the terminal running while watching.</p></div>
+<div class="video-frame"><iframe id="video-player" data-video-id="{video_id}" hidden title="YouTube video player" allow="accelerometer; autoplay; clipboard-write; encrypted-media; picture-in-picture; web-share" allowfullscreen referrerpolicy="strict-origin-when-cross-origin"></iframe><p id="local-player-info" class="local-player-info">To play video here, open report in local viewer:<br><span id="viewer-shell">POSIX shell: </span><code id="viewer-command">jot open 'report.html'</code><br>Keep terminal running while watching.</p></div>
 <p id="player-status" class="player-status" role="status" aria-live="polite" aria-atomic="true">Choose a timestamp to request that moment in the video.</p>
 <p id="playback-note" class="playback-note">Reading works offline. Video playback needs internet and the local HTTP viewer; use the direct YouTube link if embedding is unavailable.</p>
 <a class="direct-link" href="{watch_url}" rel="noopener noreferrer">Open directly on YouTube ↗</a>

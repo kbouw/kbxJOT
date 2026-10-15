@@ -433,6 +433,9 @@ if configuration.get("approval_policy") != '"never"' or configuration.get("web_s
     sys.exit(22)
 if configuration.get("features.shell_tool") != "false" or configuration.get("mcp_servers") != "{}":
     sys.exit(23)
+if any(configuration.get("features." + feature) != "false"
+       for feature in ("view_image", "plugins", "hooks", "code_mode.enabled")):
+    sys.exit(25)
 provider = json.loads(configuration["model_provider"])
 if any(configuration.get(f"model_providers.{provider}.{kind}_max_retries") != "0"
        for kind in ("request", "stream")):

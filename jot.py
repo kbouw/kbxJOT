@@ -9,6 +9,7 @@ saved Markdown and self-contained HTML are published.
 import argparse
 import os
 import re
+import shlex
 import shutil
 import sys
 import tempfile
@@ -380,7 +381,14 @@ def cmd_transcribe(
             sys.exit(1)
         print(f"\n{C.GREEN}Saved evaluation:{C.RESET} {markdown_path}")
         print(f"{C.GREEN}Saved HTML:{C.RESET} {html_path}")
-        print(f'{C.DIM}For video playback: jot open "{html_path}"{C.RESET}')
+        if sys.platform == "win32":
+            shell = "PowerShell"
+            # PowerShell treats ASCII and U+2018–U+201B apostrophes as delimiters.
+            quoted_path = "'" + re.sub(r"['\u2018-\u201b]", lambda quote: quote.group() * 2, str(html_path)) + "'"
+        else:
+            shell = "POSIX shell"
+            quoted_path = shlex.quote(str(html_path))
+        print(f"{C.DIM}For video playback ({shell}): jot open {quoted_path}{C.RESET}")
         return markdown_path, html_path
 
     size_kb = output_path.stat().st_size / 1024

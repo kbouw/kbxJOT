@@ -78,6 +78,8 @@ uv run jot open 'transcripts/talk.evaluation.html'
 
 This opens your browser and serves only the selected report on `127.0.0.1`. Keep the terminal running; Ctrl-C stops it. If the browser does not open, use the printed URL.
 
+Playback hints quote the full file path for the labeled POSIX shell or PowerShell; use that shell when copying them.
+
 Double-clicked HTML remains readable offline, but YouTube playback requires HTTP and internet. No public hosting or YouTube API key is needed. If the video disallows embedding, use its direct YouTube link.
 
 Takeaways have one **Start** link; watch/skip ranges stay inline. Signal-versus-fluff ratings have no timestamp links or quote rows. Full evidence remains in the saved response JSON and source transcript.
