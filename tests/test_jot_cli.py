@@ -192,11 +192,11 @@ class WorkflowTests(unittest.TestCase):
                 command = output.split("For video playback (POSIX shell): ", 1)[1].split(jot.C.RESET, 1)[0]
                 parsed = subprocess.run(
                     [shutil.which("sh"), "-c",
-                     'jot() { printf "%s\\\\0" jot "$@"; }; ' + command],
+                     'uv() { printf "%s\\\\0" uv "$@"; }; ' + command],
                     check=True, capture_output=True,
                 )
                 self.assertEqual(parsed.stdout.decode().split("\0")[:-1],
-                                 ["jot", "open", str(html_path)])
+                                 ["uv", "run", "jot", "open", str(html_path)])
                 self.assertFalse(marker.exists())
 
     def test_windows_playback_hint_explicitly_targets_powershell(self):
@@ -205,7 +205,7 @@ class WorkflowTests(unittest.TestCase):
         with patch.object(jot.sys, "platform", "win32"):
             code, output, error, _ = self.run_command(evaluate=True)
         self.assertEqual(code, 0, error)
-        self.assertIn("For video playback (PowerShell): jot open 'C:/Reports/O''Brien ‘‘left’’ ‚‚low‛‛ $() `talk` & notes.html'",
+        self.assertIn("For video playback (PowerShell): uv run jot open 'C:/Reports/O''Brien ‘‘left’’ ‚‚low‛‛ $() `talk` & notes.html'",
                       output)
 
     def test_missing_evaluator_stops_before_network_or_capture(self):

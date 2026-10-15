@@ -388,7 +388,7 @@ def cmd_transcribe(
         else:
             shell = "POSIX shell"
             quoted_path = shlex.quote(str(html_path))
-        print(f"{C.DIM}For video playback ({shell}): jot open {quoted_path}{C.RESET}")
+        print(f"{C.DIM}For video playback ({shell}): uv run jot open {quoted_path}{C.RESET}")
         return markdown_path, html_path
 
     size_kb = output_path.stat().st_size / 1024
