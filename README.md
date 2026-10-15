@@ -68,14 +68,23 @@ Evaluation alone can take up to 10 minutes, in addition to caption capture. Allo
 
 ## Use the result
 
-Open the delivered `.evaluation.html` file in a modern browser. Share the HTML file alone: no companion assets, keys, or server are needed for reading. A remote assistant must provide a downloadable file, not a path on its own machine.
+Share the HTML file alone: the report, transcript, and fonts work offline. A remote assistant must provide a downloadable file, not a path on its own machine.
+
+For video playback, use the local viewer:
+
+```bash
+uv run jot open 'transcripts/talk.evaluation.html'
+```
+
+This opens your browser and serves only the selected report on `127.0.0.1`. Keep the terminal running; Ctrl-C stops it. If the browser does not open, use the printed URL.
+
+Double-clicked HTML remains readable offline, but YouTube playback requires HTTP and internet. No public hosting or YouTube API key is needed. If the video disallows embedding, use its direct YouTube link.
 
 Takeaways have one **Start** link; watch/skip ranges stay inline. Signal-versus-fluff ratings have no timestamp links or quote rows. Full evidence remains in the saved response JSON and source transcript.
 
 - **English captions unavailable?** The default evaluation workflow stops, even when captions exist in another language. It never silently downloads audio or uses paid transcription.
 - **Evaluator or validation failure?** jot stops without publishing a report. The saved transcript remains available. There is no fallback to host-assistant self-evaluation or automatic retry.
 - **Timeout, interruption, or excessive evaluator output?** jot stops the evaluator process tree without publishing a report. Evaluation has a 10-minute deadline and an 8 MiB limit on each output stream.
-- **Reading works offline; playback needs internet.** If the embedded video is blocked, use the page's direct YouTube link.
 
 Evaluators run fresh sessions outside your project, without the host conversation. Claude Code is tool-free. **Codex is not tool-free:** it uses a read-only sandbox with restrictive settings; some built-in tools remain exposed.
 

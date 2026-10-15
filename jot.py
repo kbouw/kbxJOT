@@ -380,6 +380,7 @@ def cmd_transcribe(
             sys.exit(1)
         print(f"\n{C.GREEN}Saved evaluation:{C.RESET} {markdown_path}")
         print(f"{C.GREEN}Saved HTML:{C.RESET} {html_path}")
+        print(f'{C.DIM}For video playback: jot open "{html_path}"{C.RESET}')
         return markdown_path, html_path
 
     size_kb = output_path.stat().st_size / 1024
@@ -403,10 +404,11 @@ def main() -> None:
             "  jot --render-html transcripts/talk.evaluation.md\n"
             "  jot setup\n"
             "  jot config evaluator codex\n"
+            "  jot open transcripts/talk.evaluation.html\n"
         ),
     )
-    parser.add_argument("url", nargs="?", help="YouTube URL, or setup / config")
-    parser.add_argument("arguments", nargs="*", metavar="ARG", help="Arguments for setup / config")
+    parser.add_argument("url", nargs="?", help="YouTube URL, or setup / config / open")
+    parser.add_argument("arguments", nargs="*", metavar="ARG", help="Arguments for setup / config / open")
     parser.add_argument("--output", "-o", help="Output directory (capture: ./transcripts; offline files: beside input)")
     parser.add_argument("--diarize", action="store_true", help="Use AssemblyAI speaker diarization")
     parser.add_argument("--skip-captions", action="store_true", help="Use AssemblyAI instead of YouTube captions")
@@ -418,11 +420,11 @@ def main() -> None:
     parser.add_argument("--render-html", type=Path, metavar="FILE",
                         help="Render saved evaluation Markdown to portable HTML without API calls")
     args = parser.parse_args()
-    if args.url in {"setup", "config"}:
+    if args.url in {"setup", "config", "open"}:
         if any((args.evaluate, args.evaluator, args.diarize, args.skip_captions, args.captions_only,
                 args.output is not None, args.background is not None, args.agent_instructions,
                 args.render_html is not None)):
-            parser.error("setup / config cannot be combined with capture or rendering options")
+            parser.error("setup / config / open cannot be combined with capture or rendering options")
         try:
             if args.url == "setup" and not args.arguments:
                 from jot_config import setup
@@ -432,8 +434,11 @@ def main() -> None:
                 if len(args.arguments) == 2:
                     set_evaluator(args.arguments[1])
                 print(f"Default evaluator: {get_evaluator()}")
+            elif args.url == "open" and len(args.arguments) == 1:
+                from jot_viewer import open_report
+                open_report(Path(args.arguments[0]).expanduser().resolve())
             else:
-                parser.error("Use jot setup or jot config evaluator [claude|codex]")
+                parser.error("Use jot setup, jot config evaluator [claude|codex], or jot open FILE")
         except (OSError, ValueError, EOFError) as e:
             parser.error(str(e))
         except KeyboardInterrupt:

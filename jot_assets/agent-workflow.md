@@ -14,7 +14,7 @@ Your role is to run jot and deliver its generated HTML watch page. jot owns capt
 
 English captions are required by the default workflow. Caption absence, empty captions, or fetch failures stop without downloading audio or calling a transcription provider. Ask the user before paid audio transcription or another transcription service. Explicit audio options are outside the default path.
 
-The saved HTML is self-contained for reading and sharing. Video playback needs internet; if an embedded video is blocked, use the page's direct YouTube link.
+The saved HTML is self-contained for reading and sharing. For user-requested local video playback, run `jot open FILE` and keep the foreground server running; it serves only that report on loopback HTTP and prints the actual URL. A double-clicked file shows viewer instructions instead of loading a broken player. Playback needs internet and an embeddable video. A localhost URL is not a deliverable to a remote user: provide the HTML download, which they can open through their own local jot viewer, or use the direct YouTube link.
 
 ## Failure and validation boundary
 

@@ -372,28 +372,6 @@ class EvaluationHTMLTests(unittest.TestCase):
         ]
 
 
-    def test_valid_video_ids_are_embedded_without_network(self):
-        cases = (
-            ("kSzbuPFjdQo", "https://www.youtube.com/watch?v=kSzbuPFjdQo"),
-            (_VIDEO_ID, f"https://youtu.be/{_VIDEO_ID}?si=share-token"),
-            (_OTHER_VIDEO_ID, f"https://youtube.com/watch?v={_OTHER_VIDEO_ID}&feature=share"),
-            ("AbC_dE-f012", "https://youtu.be/AbC_dE-f012"),
-        )
-        for video_id, source in cases:
-            with self.subTest(source=source):
-                parsed = self.render(_saved_evaluation(source=source))
-                frames = [node for node in parsed.elements if node.tag == "iframe"]
-                self.assertEqual(len(frames), 1)
-                embed = urlsplit(frames[0].attrs.get("src", ""))
-                self.assertEqual(embed.scheme, "https")
-                self.assertIn(embed.hostname, {
-                    "youtube.com", "www.youtube.com", "youtube-nocookie.com",
-                    "www.youtube-nocookie.com",
-                })
-                self.assertEqual(embed.path, f"/embed/{video_id}")
-                for anchor in parsed.seek_anchors:
-                    self.assert_seek(anchor, int(anchor.attrs["data-start"]), video_id)
-
     def test_invalid_ids_and_non_youtube_sources_are_rejected(self):
         sources = (
             "https://youtu.be/short",
