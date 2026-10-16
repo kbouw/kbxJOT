@@ -76,7 +76,9 @@ def open_report(path: Path) -> None:
                 if not opened:
                     print("No browser opened. Open the report URL above manually.",
                           file=sys.stderr, flush=True)
-            server_thread.join()
+            # Keep Ctrl-C interruptible on Windows/Python <3.14 (CPython #139689).
+            while server_thread.is_alive():
+                server_thread.join(timeout=0.5)
         except KeyboardInterrupt:
             print("\nReport server stopped.", flush=True)
         finally:
