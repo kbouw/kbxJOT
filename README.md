@@ -62,7 +62,7 @@ Prefer the terminal? From the project folder, run:
 uv run jot 'YOUTUBE_URL' --captions-only --evaluate
 ```
 
-jot prints the actual saved HTML path. Transcripts and evaluation artifacts stay in `./transcripts` by default; `-o DIR` changes the destination. You do not need to handle request packets or response JSON.
+jot prints the actual saved HTML path. After a successful evaluation in an interactive terminal, it opens your browser and starts the local viewer automatically. Assistants running locally start the viewer for you and return its clickable URL. Transcripts and evaluation artifacts stay in `./transcripts` by default; `-o DIR` changes the destination.
 
 Evaluation alone can take up to 10 minutes, in addition to caption capture. Allow at least 15 minutes when running jot through an assistant or command runner, and wait for its success path or diagnostic rather than cancelling a slow evaluation.
 
@@ -70,15 +70,11 @@ Evaluation alone can take up to 10 minutes, in addition to caption capture. Allo
 
 Share the HTML file alone: the report, transcript, and fonts work offline. A remote assistant must provide a downloadable file, not a path on its own machine.
 
-For video playback, use the local viewer:
+The local viewer serves only the selected report on `127.0.0.1`. Keep its terminal or assistant-managed process running; Ctrl-C stops a terminal viewer. If the browser does not open, use the printed URL. To reopen a saved report later:
 
 ```bash
 uv run jot open 'transcripts/talk.evaluation.html'
 ```
-
-This opens your browser and serves only the selected report on `127.0.0.1`. Keep the terminal running; Ctrl-C stops it. If the browser does not open, use the printed URL.
-
-Playback hints use `uv run jot open` from the jot checkout, quoting the full file path for the labeled POSIX shell or PowerShell.
 
 Double-clicked HTML remains readable offline, but YouTube playback requires HTTP and internet. No public hosting or YouTube API key is needed. If the video disallows embedding, use its direct YouTube link.
 

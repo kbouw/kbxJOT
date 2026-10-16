@@ -1,13 +1,14 @@
 """Serve one report on loopback so embedded media receives an HTTP referrer."""
 
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from threading import Thread
 from urllib.parse import urlsplit
 import sys
 import webbrowser
 
 
-def _create_server(path: Path) -> HTTPServer:
+def _create_server(path: Path) -> ThreadingHTTPServer:
     """Read the selected report once; never map request paths to the filesystem."""
     path = Path(path)
     if path.suffix.lower() not in {".html", ".htm"}:
@@ -54,14 +55,16 @@ def _create_server(path: Path) -> HTTPServer:
             # Request URLs can contain sensitive report information.
             pass
 
-    return HTTPServer(("127.0.0.1", 0), ReportHandler)
+    return ThreadingHTTPServer(("127.0.0.1", 0), ReportHandler)
 
 
 def open_report(path: Path) -> None:
-    """Open a report in the browser and serve it until Ctrl-C."""
+    """Serve before launching the browser; stop and join the server on Ctrl-C."""
     with _create_server(path) as server:
         url = f"http://127.0.0.1:{server.server_port}/report.html"
         print(f"Report: {url}\nPress Ctrl-C to stop serving.", flush=True)
+        server_thread = Thread(target=server.serve_forever, daemon=True)
+        server_thread.start()
         try:
             try:
                 opened = webbrowser.open(url)
@@ -73,6 +76,11 @@ def open_report(path: Path) -> None:
                 if not opened:
                     print("No browser opened. Open the report URL above manually.",
                           file=sys.stderr, flush=True)
-            server.serve_forever()
+            # Keep Ctrl-C interruptible on Windows/Python <3.14 (CPython #139689).
+            while server_thread.is_alive():
+                server_thread.join(timeout=0.5)
         except KeyboardInterrupt:
             print("\nReport server stopped.", flush=True)
+        finally:
+            server.shutdown()
+            server_thread.join()
