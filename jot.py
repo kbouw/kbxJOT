@@ -10,7 +10,6 @@ import argparse
 import json
 import os
 import re
-import shlex
 import shutil
 import sys
 import tempfile
@@ -388,14 +387,6 @@ def cmd_transcribe(
             sys.exit(1)
         print(f"\n{C.GREEN}Saved evaluation:{C.RESET} {markdown_path}")
         print(f"{C.GREEN}Saved HTML:{C.RESET} {html_path}")
-        if sys.platform == "win32":
-            shell = "PowerShell"
-            # PowerShell treats ASCII and U+2018–U+201B apostrophes as delimiters.
-            quoted_path = "'" + re.sub(r"['\u2018-\u201b]", lambda quote: quote.group() * 2, str(html_path)) + "'"
-        else:
-            shell = "POSIX shell"
-            quoted_path = shlex.quote(str(html_path))
-        print(f"{C.DIM}For video playback ({shell}): uv run jot open {quoted_path}{C.RESET}")
         return markdown_path, html_path
 
     size_kb = output_path.stat().st_size / 1024
@@ -518,7 +509,7 @@ def main() -> None:
             if path.exists():
                 load_dotenv(path, override=True)
                 break
-    cmd_transcribe(
+    result = cmd_transcribe(
         url=args.url,
         evaluate=args.evaluate,
         background=args.background,
@@ -528,6 +519,12 @@ def main() -> None:
         captions_only=args.captions_only,
         evaluator=args.evaluator,
     )
+    if args.evaluate and sys.stdin.isatty() and sys.stdout.isatty():
+        from jot_viewer import open_report
+        try:
+            open_report(result[1])
+        except (OSError, ValueError) as e:
+            parser.exit(1, f"Cannot start report viewer: {e}\nSaved HTML: {result[1]}\n")
 
 
 if __name__ == "__main__":

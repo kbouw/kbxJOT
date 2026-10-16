@@ -1,22 +1,23 @@
 """Offline boundaries for the YouTube-only command line."""
 
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack, redirect_stderr, redirect_stdout
 from io import StringIO
 import json
 import os
 from pathlib import Path
-import shutil
-import subprocess
 import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
+from urllib.request import urlopen
 
 from requests import Response, Session
 from youtube_transcript_api import PoTokenRequired, Transcript, TranscriptList
 
 import jot
 import jot_config
+import jot_viewer
 
 
 class CLITests(unittest.TestCase):
@@ -220,39 +221,40 @@ class WorkflowTests(unittest.TestCase):
                 self.audio.assert_not_called()
                 self.assertEqual(list(folder.iterdir()), [source])
 
-    @unittest.skipUnless(shutil.which("sh"), "requires a POSIX shell")
-    def test_playback_hint_preserves_path_through_actual_posix_shell(self):
-        marker = self.directory / "substitution-marker"
-        paths = [
-            self.directory / f"$(touch {marker}) report.html",
-            self.directory / f"`touch {marker}` report.html",
-            self.directory / "apostrophe's report; $HOME & (extra).html",
-            self.directory / "line\nbreak\tand spaces.html",
-        ]
-        for html_path in paths:
-            with self.subTest(html_path=html_path):
-                self.evaluator.return_value = (self.directory / "report.md", html_path)
-                with patch.object(jot.sys, "platform", "linux"):
-                    code, output, error, _ = self.run_command(evaluate=True)
-                self.assertEqual(code, 0, error)
-                command = output.split("For video playback (POSIX shell): ", 1)[1].split(jot.C.RESET, 1)[0]
-                parsed = subprocess.run(
-                    [shutil.which("sh"), "-c",
-                     'uv() { printf "%s\\\\0" uv "$@"; }; ' + command],
-                    check=True, capture_output=True,
-                )
-                self.assertEqual(parsed.stdout.decode().split("\0")[:-1],
-                                 ["uv", "run", "jot", "open", str(html_path)])
-                self.assertFalse(marker.exists())
+    def test_only_fully_interactive_evaluation_opens_a_live_report(self):
+        html = b"<!doctype html><title>Published report</title><p>Watch notes</p>"
+        self.evaluation_paths[1].write_bytes(html)
 
-    def test_windows_playback_hint_explicitly_targets_powershell(self):
-        html_path = Path("C:/Reports/O'Brien ‘left’ ‚low‛ $() `talk` & notes.html")
-        self.evaluator.return_value = (self.directory / "report.md", html_path)
-        with patch.object(jot.sys, "platform", "win32"):
-            code, output, error, _ = self.run_command(evaluate=True)
-        self.assertEqual(code, 0, error)
-        self.assertIn("For video playback (PowerShell): uv run jot open 'C:/Reports/O''Brien ‘‘left’’ ‚‚low‛‛ $() `talk` & notes.html'",
-                      output)
+        class SingleRequestServer(jot_viewer.HTTPServer):
+            def serve_forever(self):
+                self.timeout = 5
+                self.handle_request()
+
+        def fetch_report(url):
+            with urlopen(url, timeout=5) as response:
+                return response.status, response.read()
+
+        for stdin_tty, stdout_tty in ((True, True), (False, True), (True, False), (False, False)):
+            with self.subTest(stdin=stdin_tty, stdout=stdout_tty), ThreadPoolExecutor() as executor:
+                fetched = []
+
+                def open_browser(url):
+                    fetched.append(executor.submit(fetch_report, url))
+                    return True
+
+                output = StringIO()
+                with patch("sys.argv", ["jot", "https://youtu.be/WkBPX-oDMnA", "--evaluate"]), \
+                     patch.object(jot.sys.stdin, "isatty", return_value=stdin_tty), \
+                     patch.object(output, "isatty", return_value=stdout_tty), \
+                     patch.object(jot_viewer, "HTTPServer", SingleRequestServer), \
+                     patch.object(jot_viewer.webbrowser, "open", side_effect=open_browser), \
+                     redirect_stdout(output):
+                    jot.main()
+                if stdin_tty and stdout_tty:
+                    self.assertEqual(len(fetched), 1)
+                    self.assertEqual(fetched[0].result(timeout=5), (200, html))
+                else:
+                    self.assertEqual(fetched, [])
 
     def test_missing_evaluator_stops_before_network_or_capture(self):
         self.preflight.side_effect = ValueError("Install Claude Code")
