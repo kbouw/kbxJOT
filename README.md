@@ -28,13 +28,13 @@ codex login
 claude auth login
 ```
 
-Choose your default in an interactive terminal:
+The first evaluation starts setup automatically. A terminal prompts directly; an assistant checks readiness, asks for your choice, saves it, and continues the original request. You can also run setup yourself:
 
 ```bash
 uv run jot setup
 ```
 
-Setup checks installation and authentication, then saves your explicit choice—not credentials. For noninteractive setup, use `uv run jot config evaluator codex` or replace `codex` with `claude`.
+Setup checks installation and authentication, then saves your choice—not credentials. Assistants complete an approved choice with `uv run jot setup --evaluator codex` (or `claude`) without requiring an interactive terminal.
 
 Open your host assistant in the checkout and allow local command and file access. Use `uv run jot` inside the checkout to avoid the unrelated macOS command named `jot`.
 
@@ -46,7 +46,7 @@ Open your host assistant in the checkout and allow local command and file access
 | `uv run jot config evaluator codex` | Save Codex as the default; use `claude` to choose Claude Code |
 | `uv run jot 'YOUTUBE_URL' --evaluate --evaluator codex` | Override the default for one evaluation without changing it |
 
-Preferences are saved under `~/.config/jot` (`$XDG_CONFIG_HOME/jot` or `JOT_CONFIG_DIR` can override this). Without a saved default, pass `--evaluator` or run setup; jot never silently chooses or switches providers.
+Preferences are saved under `~/.config/jot` (`$XDG_CONFIG_HOME/jot` or `JOT_CONFIG_DIR` can override this). Jot starts onboarding when no default is saved; it never silently chooses or switches providers.
 
 ## Create a watch page
 

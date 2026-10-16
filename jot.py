@@ -7,6 +7,7 @@ saved Markdown and self-contained HTML are published.
 """
 
 import argparse
+import json
 import os
 import re
 import shlex
@@ -19,7 +20,7 @@ from dotenv import load_dotenv
 
 from jot_html import _youtube_id
 from jot_agent import read_asset
-from jot_config import config_dir
+from jot_config import EvaluatorSetupRequired, config_dir
 
 # ---------------------------------------------------------------------------
 # Constants & paths
@@ -259,11 +260,17 @@ def cmd_transcribe(
         print("Error: --captions-only cannot be combined with --diarize or --skip-captions.", file=sys.stderr)
         sys.exit(1)
     if evaluate:
-        from jot_config import get_evaluator
+        from jot_config import ensure_evaluator
         from jot_evaluator import find_evaluator
         try:
-            evaluator = get_evaluator(evaluator)
+            evaluator = ensure_evaluator(evaluator)
             find_evaluator(evaluator)
+        except EvaluatorSetupRequired as e:
+            print(json.dumps(e.report))
+            sys.exit(2)
+        except KeyboardInterrupt:
+            print("Setup cancelled.", file=sys.stderr)
+            sys.exit(130)
         except (OSError, ValueError) as e:
             print(f"Error: Cannot start evaluation: {e}", file=sys.stderr)
             sys.exit(1)
@@ -411,6 +418,7 @@ def main() -> None:
             "  jot https://youtu.be/WkBPX-oDMnA --captions-only --evaluate\n"
             "  jot --render-html transcripts/talk.evaluation.md\n"
             "  jot setup\n"
+            "  jot setup --evaluator codex\n"
             "  jot config evaluator codex\n"
             "  jot open transcripts/talk.evaluation.html\n"
         ),
@@ -422,21 +430,21 @@ def main() -> None:
     parser.add_argument("--skip-captions", action="store_true", help="Use AssemblyAI instead of YouTube captions")
     parser.add_argument("--captions-only", action="store_true", help="Require captions; never download audio or fall back to AssemblyAI")
     parser.add_argument("--evaluate", action="store_true", help="Evaluate with your selected provider; captions only unless --skip-captions or --diarize")
-    parser.add_argument("--evaluator", choices=("claude", "codex"), help="Override the saved evaluator for this evaluation")
+    parser.add_argument("--evaluator", choices=("claude", "codex"), help="Use for this evaluation, or complete setup with this choice")
     parser.add_argument("--background", help="What you already know or want to learn (with --evaluate)")
     parser.add_argument("--agent-instructions", action="store_true", help="Print host usage instructions; does not launch evaluation")
     parser.add_argument("--render-html", type=Path, metavar="FILE",
                         help="Render saved evaluation Markdown to portable HTML without API calls")
     args = parser.parse_args()
     if args.url in {"setup", "config", "open"}:
-        if any((args.evaluate, args.evaluator, args.diarize, args.skip_captions, args.captions_only,
+        if any((args.evaluate, args.evaluator is not None and args.url != "setup", args.diarize, args.skip_captions, args.captions_only,
                 args.output is not None, args.background is not None, args.agent_instructions,
                 args.render_html is not None)):
             parser.error("setup / config / open cannot be combined with capture or rendering options")
         try:
             if args.url == "setup" and not args.arguments:
                 from jot_config import setup
-                setup()
+                setup(evaluator=args.evaluator)
             elif args.url == "config" and len(args.arguments) in {1, 2} and args.arguments[0] == "evaluator":
                 from jot_config import get_evaluator, set_evaluator
                 if len(args.arguments) == 2:
@@ -447,6 +455,9 @@ def main() -> None:
                 open_report(Path(args.arguments[0]).expanduser().resolve())
             else:
                 parser.error("Use jot setup, jot config evaluator [claude|codex], or jot open FILE")
+        except EvaluatorSetupRequired as e:
+            print(json.dumps(e.report))
+            parser.exit(2)
         except (OSError, ValueError, EOFError) as e:
             parser.error(str(e))
         except KeyboardInterrupt:

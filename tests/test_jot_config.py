@@ -34,9 +34,8 @@ class ConfigTests(unittest.TestCase):
         for text in (None, "{}"):
             if text is not None:
                 self.settings.write_text(text, encoding="utf-8")
-            with self.assertRaisesRegex(ValueError, "jot setup") as raised:
+            with self.assertRaises(jot_config.EvaluatorSetupRequired):
                 jot_config.get_evaluator()
-            self.assertIn("jot config evaluator", str(raised.exception))
             self.assertEqual(jot_config.get_evaluator("claude"), "claude")
 
     def test_persisted_default_and_one_off_override_are_independent(self):
@@ -109,13 +108,52 @@ class ConfigTests(unittest.TestCase):
         self.stack.enter_context(patch("sys.stdout", output))
         return output
 
-    def test_noninteractive_setup_does_not_read_provider_state_or_save(self):
+    def test_noninteractive_first_run_discovers_readiness_without_choosing(self):
+        output = self.setup_terminal({"claude": "/bin/claude"}, [(b"private-auth", 0)], "unused")
         with patch.object(jot_config.sys.stdin, "isatty", return_value=False):
-            with patch.object(jot_config.shutil, "which") as locate:
-                with self.assertRaisesRegex(ValueError, "interactive terminal"):
-                    jot_config.setup()
-        locate.assert_not_called()
+            with self.assertRaises(jot_config.EvaluatorSetupRequired) as raised:
+                jot_config.ensure_evaluator()
+        self.assertEqual(raised.exception.report, {
+            "status": "setup_required",
+            "evaluators": [
+                {"name": "claude", "installed": True, "authenticated": True},
+                {"name": "codex", "installed": False, "authenticated": False},
+            ],
+        })
+        self.assertNotIn("private-auth", json.dumps(raised.exception.report))
+        self.assertEqual(output.getvalue(), "")
         self.assertFalse(self.settings.exists())
+
+    def test_terminal_first_run_saves_choice_and_returns_it_to_the_pending_request(self):
+        self.setup_terminal(
+            {"claude": "/bin/claude", "codex": "/bin/codex"},
+            [(b"", 0), (b"", 0)], "codex",
+        )
+        self.assertEqual(jot_config.ensure_evaluator(), "codex")
+        self.assertEqual(jot_config.get_evaluator(), "codex")
+        self.assertEqual(jot_config.ensure_evaluator(), "codex")
+
+    def test_assistant_choice_checks_and_saves_without_prompting(self):
+        self.setup_terminal({"codex": "/bin/codex"}, [(b"private-auth", 0)], "unused")
+        with patch.object(jot_config.sys.stdin, "isatty", return_value=False):
+            self.assertEqual(jot_config.setup(evaluator="codex"), "codex")
+        self.assertEqual(jot_config.get_evaluator(), "codex")
+        self.assertNotIn("private-auth", self.settings.read_text())
+
+    def test_failed_assistant_choice_preserves_the_previous_default(self):
+        jot_config.set_evaluator("claude")
+        self.setup_terminal({"codex": "/bin/codex"}, [(b"", 1)], "unused")
+        with patch.object(jot_config.sys.stdin, "isatty", return_value=False):
+            with self.assertRaises(ValueError):
+                jot_config.setup(evaluator="codex")
+        self.assertEqual(jot_config.get_evaluator(), "claude")
+
+    def test_corrupt_settings_are_not_treated_as_first_run(self):
+        self.settings.write_text('{"evaluator":"invalid"}')
+        with self.assertRaises(ValueError):
+            jot_config.ensure_evaluator()
+        self.assertEqual(self.settings.read_text(), '{"evaluator":"invalid"}')
+
 
     def test_setup_requires_explicit_choice_even_with_only_one_ready_provider(self):
         output = self.setup_terminal({"claude": "/bin/claude"}, [(b"private-auth", 0)], "")

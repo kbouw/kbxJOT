@@ -2,6 +2,7 @@
 
 from contextlib import ExitStack, redirect_stderr, redirect_stdout
 from io import StringIO
+import json
 import os
 from pathlib import Path
 import shutil
@@ -15,6 +16,7 @@ from requests import Response, Session
 from youtube_transcript_api import PoTokenRequired, Transcript, TranscriptList
 
 import jot
+import jot_config
 
 
 class CLITests(unittest.TestCase):
@@ -78,6 +80,50 @@ class CLITests(unittest.TestCase):
             {"start": 3601, "text": "  keep edge spaces  "},
             {"start": 3602, "text": "  "},
         ]), "[00:04] um,  original wording\n[01:05] [Music] and a mispeling\n[01:00:01]   keep edge spaces  ")
+
+
+class OnboardingCLITests(unittest.TestCase):
+    def setUp(self):
+        self.stack = ExitStack()
+        self.addCleanup(self.stack.close)
+        self.directory = Path(self.stack.enter_context(tempfile.TemporaryDirectory()))
+        self.stack.enter_context(patch.dict(os.environ, {"JOT_CONFIG_DIR": str(self.directory)}, clear=True))
+        self.stack.enter_context(patch.object(jot_config.sys.stdin, "isatty", return_value=False))
+        self.stack.enter_context(patch.object(jot_config.shutil, "which",
+                                            side_effect=lambda name: "/fixture/claude" if name == "claude" else None))
+        self.stack.enter_context(patch("jot_evaluator._run_evaluator", return_value=(b"private-auth", 0)))
+        self.stack.enter_context(patch.object(jot, "_get_video_metadata",
+                                            side_effect=AssertionError("Capture started before setup completed")))
+
+    def cli(self, arguments):
+        output, error = StringIO(), StringIO()
+        with patch("sys.argv", ["jot", *arguments]), redirect_stdout(output), redirect_stderr(error):
+            try:
+                jot.main()
+            except SystemExit as exc:
+                code = exc.code
+            else:
+                code = 0
+        return code, output.getvalue(), error.getvalue()
+
+    def test_first_assistant_run_returns_ready_choices_without_capture_or_manual_handoff(self):
+        code, output, error = self.cli(["https://youtu.be/WkBPX-oDMnA", "--evaluate"])
+        self.assertEqual(code, 2)
+        self.assertEqual(error, "")
+        self.assertEqual(json.loads(output), {
+            "status": "setup_required",
+            "evaluators": [
+                {"name": "claude", "installed": True, "authenticated": True},
+                {"name": "codex", "installed": False, "authenticated": False},
+            ],
+        })
+        self.assertFalse((self.directory / "settings.json").exists())
+        self.assertNotIn("private-auth", output)
+
+    def test_assistant_can_complete_setup_using_the_users_choice(self):
+        code, _, error = self.cli(["setup", "--evaluator", "claude"])
+        self.assertEqual(code, 0, error)
+        self.assertEqual(jot_config.get_evaluator(), "claude")
 
 
 _WORKFLOW_METADATA = {"title": "Workflow Talk", "channel": "Test Channel", "duration": 78}
