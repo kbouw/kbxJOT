@@ -60,18 +60,30 @@ def _read_settings() -> dict:
         ) from None
 
 
+class EvaluatorSetupRequired(ValueError):
+    """Carry discovered readiness to a host assistant without choosing a provider."""
+
+    def __init__(self, evaluators: list[dict] | None = None):
+        super().__init__("Choose an evaluator to complete setup.")
+        self.report = {"status": "setup_required", "evaluators": evaluators or []}
+
+
 def get_evaluator(override: str | None = None) -> str:
     """Use an explicit override first, otherwise require a valid saved default."""
     if override is not None:
         return _validate_evaluator(override)
     settings = _read_settings()
     if "evaluator" not in settings:
-        raise ValueError(
-            "No evaluator is configured. Run `jot setup` or "
-            "`jot config evaluator claude` / `jot config evaluator codex`, "
-            "or pass `--evaluator claude` / `--evaluator codex` for one evaluation."
-        )
+        raise EvaluatorSetupRequired()
     return settings["evaluator"]
+
+
+def ensure_evaluator(override: str | None = None) -> str:
+    """Start onboarding only when evaluation has no explicit or saved provider."""
+    try:
+        return get_evaluator(override)
+    except EvaluatorSetupRequired:
+        return setup()
 
 
 def set_evaluator(name: str) -> None:
@@ -97,48 +109,60 @@ def set_evaluator(name: str) -> None:
             temporary.unlink(missing_ok=True)
 
 
-def setup() -> None:
-    """Guide a terminal user through installation/auth checks and save their choice."""
-    if not sys.stdin.isatty() or not sys.stdout.isatty():
-        raise ValueError(
-            "`jot setup` requires an interactive terminal. Use `jot config evaluator claude` "
-            "or `jot config evaluator codex` to save an explicit default non-interactively."
-        )
-    # Validate before probing providers or inviting a choice that cannot be saved.
+def setup(evaluator: str | None = None) -> str:
+    """Discover readiness, obtain an explicit choice, and save it without credentials.
+
+    Terminals prompt directly. Noninteractive hosts receive structured readiness
+    and complete setup with the user's choice through ``setup(evaluator=...)``.
+    """
+    if evaluator is not None:
+        _validate_evaluator(evaluator)
     _read_settings()
     from jot_evaluator import _run_evaluator
 
+    interactive = sys.stdin.isatty() and sys.stdout.isatty()
+    prompting = interactive and evaluator is None
+    if prompting:
+        print("Let's set up the evaluator before continuing.")
+        print("Claude is tool-free. Codex uses a fresh read-only sandbox; some built-in tools remain exposed.")
     available = {}
-    print("Choose the CLI that will evaluate your transcripts. Credentials remain with that CLI.")
-    print("Claude is tool-free. Codex uses a fresh read-only sandbox; some built-in tools remain exposed.")
-    for name in EVALUATORS:
+    for name in (EVALUATORS if evaluator is None else (evaluator,)):
         executable = shutil.which(name)
-        if executable is None:
-            print(f"  {name}: not installed; install {_NAMES[name]} and add `{name}` to PATH.")
-            available[name] = False
-            continue
-        command = [
-            str(Path(executable).resolve()),
-            *(["auth", "status"] if name == "claude" else ["login", "status"]),
-        ]
-        try:
-            with tempfile.TemporaryDirectory(prefix="jot-auth-check-") as directory:
-                _, returncode = _run_evaluator(command, b"", directory, os.environ.copy(), timeout=15)
-            authenticated = returncode == 0
-        except (OSError, ValueError, subprocess.TimeoutExpired):
-            authenticated = False
-        available[name] = authenticated
-        status = "installed; authentication check passed" if authenticated else "installed; authentication check failed"
-        print(f"  {name}: {status}. Sign in with `{_LOGIN[name]}`.")
+        authenticated = False
+        if executable is not None:
+            command = [
+                str(Path(executable).resolve()),
+                *(["auth", "status"] if name == "claude" else ["login", "status"]),
+            ]
+            try:
+                with tempfile.TemporaryDirectory(prefix="jot-auth-check-") as directory:
+                    _, returncode = _run_evaluator(command, b"", directory, os.environ.copy(), timeout=15)
+                authenticated = returncode == 0
+            except (OSError, ValueError, subprocess.TimeoutExpired):
+                pass
+        available[name] = {
+            "name": name, "installed": executable is not None, "authenticated": authenticated,
+        }
+        if prompting:
+            if executable is None:
+                print(f"  {name}: not installed; install {_NAMES[name]} and add `{name}` to PATH.")
+            else:
+                status = "authentication check passed" if authenticated else "authentication check failed"
+                print(f"  {name}: installed; {status}.")
+                if not authenticated:
+                    print(f"    Sign in with `{_LOGIN[name]}`.")
+    if evaluator is None and not interactive:
+        raise EvaluatorSetupRequired(list(available.values()))
     try:
-        choice = input("Default evaluator [claude/codex] (no automatic choice): ").strip()
+        choice = evaluator if evaluator is not None else input("Default evaluator [claude/codex]: ").strip()
     except EOFError:
         raise ValueError("Setup cancelled; no evaluator was saved.") from None
     _validate_evaluator(choice)
-    if not available[choice]:
+    if not available[choice]["authenticated"]:
         raise ValueError(
             f"{_NAMES[choice]} is not ready. Install `{choice}` if missing, run `{_LOGIN[choice]}`, "
-            "then run `jot setup` again. No evaluator was saved."
+            "then complete setup again. No evaluator was saved."
         )
     set_evaluator(choice)
     print(f"Saved default evaluator: {choice}.")
+    return choice

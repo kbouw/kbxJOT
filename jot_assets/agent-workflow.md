@@ -5,7 +5,13 @@ Your role is to run jot and deliver its generated HTML watch page. jot owns capt
 ## Procedure
 
 1. Learn the installed interface with `jot --help`. In a repository checkout, use `uv run jot` for every command below. Printing instructions and help needs no evaluator access.
-2. Run `jot URL --captions-only --evaluate [-o DIR]` using the user's saved evaluator. If no evaluator is configured, explain `jot setup` for terminal onboarding or `jot config evaluator codex` / `jot config evaluator claude` for an explicit default. A user-requested one-run choice uses `--evaluator codex` or `--evaluator claude`; do not silently choose a provider. Add `--background TEXT` only when the user supplies their knowledge or learning goals; do not insert your own verdict.
+2. Run `jot URL --captions-only --evaluate [-o DIR]`. First-run setup starts automatically. In a noninteractive run, an exit code of 2 with JSON `status: "setup_required"` is an onboarding request, not a failed video evaluation:
+
+   - Use the returned evaluator installation/authentication status to ask the user which default they want. If only one is ready, offer it for confirmation. Do not silently infer a provider from your own harness.
+   - Run `jot setup --evaluator NAME` yourself with their choice. Do not hand the user a menu of setup commands to type. If installation or sign-in is needed, facilitate those steps with your tools; the user must complete any required browser/account approval, and credentials must remain with the provider CLI.
+   - After setup succeeds, rerun the original video command with its original options and deliver the generated HTML. No evaluator or capture ran before this onboarding request, so continuing is not a retry of a failed evaluation.
+
+   A user-requested one-run choice can use `--evaluator codex` or `--evaluator claude` without changing the saved default. Add `--background TEXT` only when the user supplies their knowledge or learning goals; do not insert your own verdict.
 
    Allow at least 15 minutes for the outer command: the evaluator alone has a 10-minute deadline, separate from caption capture. Wait for jot to finish instead of treating silence as failure. If the user cancels, jot terminates the evaluator process tree; do not start a replacement evaluation yourself.
 3. jot requires the selected CLI to be installed and authenticated (`codex login` or `claude auth login`). It starts a fresh noninteractive evaluator outside the project. Claude Code is tool-free with customizations, MCP and session persistence disabled. Codex is ephemeral and read-only with restrictive capabilities and user config/rules ignored, but its CLI may still expose built-in tools; do not describe Codex as tool-free. Credentials and billing remain with the chosen CLI; no additional evaluation API key is required. This does not reuse your conversation or guarantee the evaluator is the same model as your host assistant.
