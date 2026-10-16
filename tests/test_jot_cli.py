@@ -1,6 +1,5 @@
 """Offline boundaries for the YouTube-only command line."""
 
-from concurrent.futures import ThreadPoolExecutor
 from contextlib import ExitStack, redirect_stderr, redirect_stdout
 from io import StringIO
 import json
@@ -225,34 +224,30 @@ class WorkflowTests(unittest.TestCase):
         html = b"<!doctype html><title>Published report</title><p>Watch notes</p>"
         self.evaluation_paths[1].write_bytes(html)
 
-        class SingleRequestServer(jot_viewer.HTTPServer):
-            def serve_forever(self):
-                self.timeout = 5
-                self.handle_request()
-
         def fetch_report(url):
             with urlopen(url, timeout=5) as response:
                 return response.status, response.read()
 
         for stdin_tty, stdout_tty in ((True, True), (False, True), (True, False), (False, False)):
-            with self.subTest(stdin=stdin_tty, stdout=stdout_tty), ThreadPoolExecutor() as executor:
+            with self.subTest(stdin=stdin_tty, stdout=stdout_tty):
                 fetched = []
 
                 def open_browser(url):
-                    fetched.append(executor.submit(fetch_report, url))
-                    return True
+                    try:
+                        fetched.append(fetch_report(url))
+                    finally:
+                        # Stop after the browser request, even if a regression times out.
+                        raise KeyboardInterrupt
 
                 output = StringIO()
                 with patch("sys.argv", ["jot", "https://youtu.be/WkBPX-oDMnA", "--evaluate"]), \
                      patch.object(jot.sys.stdin, "isatty", return_value=stdin_tty), \
                      patch.object(output, "isatty", return_value=stdout_tty), \
-                     patch.object(jot_viewer, "HTTPServer", SingleRequestServer), \
                      patch.object(jot_viewer.webbrowser, "open", side_effect=open_browser), \
                      redirect_stdout(output):
                     jot.main()
                 if stdin_tty and stdout_tty:
-                    self.assertEqual(len(fetched), 1)
-                    self.assertEqual(fetched[0].result(timeout=5), (200, html))
+                    self.assertEqual(fetched, [(200, html)])
                 else:
                     self.assertEqual(fetched, [])
 
